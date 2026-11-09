@@ -4,7 +4,8 @@
 //   - where messages sit in the conversation, and which mark alt+j / alt+k goes to
 //   - which replies are long enough to be marked by themselves, and where things sit on the bar
 //     alt+j / alt+k show
-//   - a reply cut into sentences, each with a hint to type, for highlighting by keys
+//   - where two typed letters (or a Boshiamy code's first two) land in a reply, and where a span
+//     from there may end, for highlighting by keys
 
 // Table borders count as space, so a selected table row (drawn with │) still matches the source.
 const SPACE = /[\s│┃|]/
@@ -406,54 +407,85 @@ export function barCells(width, stops, thumb) {
   return cells.map(({ i, ...c }) => c)
 }
 
-// ---- sentences, for highlighting by keys ---------------------------------------------
+// ---- choosing a span by keys ----------------------------------------------------------
+//
+// A point is { block, offset }: a place in a reply as blocksOf() cuts it, `offset` in its block's
+// text. A start is the character at it; an end lies just past the span's last character.
 
-const STOP = /[。！？!?]/
-const CLOSER = /[」』）)"'”’\]]/
-
-// A reply cut into what a hint picks: a sentence (up to 。！？!? or a full stop before a space), a
-// line of a code block or a table, each line of anything else at least.
-// { blocks: [{ segs, code, text }], units: [{ block, start, end, line }] }: start / end in the
-// block's text (blockSegments joined), line the source line it starts on.
-export function sentencesOf(md) {
+// A reply as the reader sees it, block by block: { segs, code, text, line }, `line` the source
+// line its text starts on.
+export function blocksOf(md) {
   const lines = (md || '').split('\n')
-  const blocks = []
-  const units = []
-  for (const b of splitBlocks(lines)) {
+  return splitBlocks(lines).map(b => {
     const segs = blockSegments(lines, b)
-    const text = segs.map(s => s.text).join('')
-    const block = blocks.length
-    blocks.push({ segs, code: b.fence, text })
-    let from = 0
-    let line = b.start + (b.fence ? 1 : 0)
-    const cut = to => {
-      const piece = text.slice(from, to)
-      const body = piece.trim()
-      const lead = piece.length - piece.trimStart().length
-      if (body) units.push({ block, start: from + lead, end: from + lead + body.length, line })
-      from = to
+    return { segs, code: b.fence, text: segs.map(s => s.text).join(''), line: b.start + (b.fence ? 1 : 0) }
+  })
+}
+
+// Where two typed characters land, easymotion-s2 style: each place whose next two characters are
+// them (any case), and, for two letters, each Chinese character whose Boshiamy code starts with
+// them (`bosh`: two letters -> a Set of characters). [{ block, offset, length }]
+export function findTwo(blocks, two, bosh) {
+  const q = two.toLowerCase()
+  const set = /^[a-z]{2}$/.test(q) ? bosh(q) : null
+  const out = []
+  blocks.forEach((b, block) => {
+    const t = b.text
+    for (let i = 0; i < t.length; i++) {
+      if (/\s/.test(t[i])) continue
+      if (t.slice(i, i + 2).toLowerCase() === q) out.push({ block, offset: i, length: 2 })
+      else if (set?.has(t[i])) out.push({ block, offset: i, length: 1 })
     }
-    for (let i = 0; i < text.length; i++) {
-      if (text[i] === '\n') {
-        cut(i)
-        from = i + 1
-        line++
-        continue
-      }
-      const head = text.slice(text.lastIndexOf('\n', i - 1) + 1, i)
-      if (b.fence || head.trimStart().startsWith('|')) continue
-      const c = text[i]
-      // a list's `1.` is no sentence
-      const ends = STOP.test(c) || (c === '.' && !/^\s*\d+$/.test(head) && (i + 1 === text.length || /\s/.test(text[i + 1])))
-      if (!ends) continue
+  })
+  return out
+}
+
+// Punctuation a span may end on: a sentence's or a clause's. The ASCII ones only before a space
+// or the line's end, so a URL's `:` or `.` is not taken for one.
+const WIDE_STOP = /[。！？，；：]/
+const ASCII_STOP = /[.!?,;:]/
+const CLOSER = /[」』）)"'”’\]]/
+// a run of ASCII with no space in it, that is a URL or a path when it holds a / or a \
+const RUN = /[!-~]+/g
+const TRAIL = /[.,;:)\]>'"`]+$/
+
+// Where a span from `from` may end: past a sentence's or a clause's punctuation (and the quotes
+// or brackets closing on it), at the end of each line, and at the end of a URL or a path; in the
+// block of `from` after it, and in every block after that. [{ block, offset }]
+export function endsAfter(blocks, from) {
+  const out = []
+  for (let block = from.block; block < blocks.length; block++) {
+    const t = blocks[block].text
+    const ends = new Set([t.length])
+    for (let i = 0; i < t.length; i++) {
+      if (t[i] === '\n') ends.add(i)
+      const stops = WIDE_STOP.test(t[i]) || (ASCII_STOP.test(t[i]) && (i + 1 === t.length || /\s/.test(t[i + 1])))
+      if (!stops) continue
       let j = i + 1
-      while (j < text.length && CLOSER.test(text[j])) j++
-      cut(j)
-      i = j - 1
+      while (j < t.length && CLOSER.test(t[j])) j++
+      ends.add(j)
     }
-    cut(text.length)
+    for (const m of t.matchAll(RUN)) {
+      if (!/[/\\]/.test(m[0])) continue
+      ends.add(m.index + m[0].replace(TRAIL, '').length)
+    }
+    for (const offset of [...ends].sort((a, b) => a - b)) {
+      if (block > from.block || offset > from.offset) out.push({ block, offset })
+    }
   }
-  return { blocks, units }
+  return out
+}
+
+// The row a point is on, from the message's top (its blank row 0 counted), as the message's
+// `onScreen` counts rows: each source line wrapped on its own `columns` across.
+export function rowOfPoint(md, blocks, p, columns) {
+  const width = Math.max(20, columns)
+  const lines = (md || '').split('\n')
+  const b = blocks[p.block]
+  const line = b.line + (b.text.slice(0, p.offset).match(/\n/g)?.length ?? 0)
+  let row = 1
+  for (let i = 0; i < line && i < lines.length; i++) row += Math.max(1, Math.ceil(cellsOf(lines[i]) / width))
+  return row
 }
 
 // Labels for n hints, the first ones a single letter while enough letters are left over as the
@@ -468,23 +500,9 @@ export function hintLabels(n, alphabet) {
   return out.slice(0, n)
 }
 
-// The units in the order hints go to them: those whose line shows (view: the message's
-// onScreen) first, so they get the single letters, then the rest, each in reading order.
-export function hintOrder(md, units, columns, view) {
-  const top = []
-  let y = 1
-  for (const l of (md || '').split('\n')) {
-    top.push(y)
-    y += Math.max(1, Math.ceil(cellsOf(l) / Math.max(20, columns)))
-  }
-  const shows = u => !!view && top[u.line] >= view.first && top[u.line] <= view.last
-  const all = units.map((_, i) => i)
-  return [...all.filter(i => shows(units[i])), ...all.filter(i => !shows(units[i]))]
-}
-
-// A block's pieces split where a hint goes in (hints: offset -> label, drawn before that
-// character as a run of its own, `hint`), where a highlight (`lit`) and the selection (`sel`:
-// [from, to) offsets) start and end.
+// A block's pieces split where a hint goes in (hints: offset -> label, drawn before the character
+// at that offset, or after the last one, as a run of its own, `hint`), where a highlight (`lit`)
+// and the selection (`sel`: [from, to) offsets) start and end.
 export function paintRuns(segs, { lit = null, sel = null, hints = new Map() }) {
   const runs = []
   const flags = k => `${lit?.[k] === 1 ? 1 : 0}${sel && k >= sel[0] && k < sel[1] ? 1 : 0}`
@@ -500,35 +518,37 @@ export function paintRuns(segs, { lit = null, sel = null, hints = new Map() }) {
     }
     at += text.length
   }
+  if (hints.has(at)) runs.push({ text: hints.get(at), hint: true })
   return runs
 }
 
-// A reply drawn for picking sentences: every block as runs, a hint before each unit that has a
-// label, the units from..to (indexes; to null: from alone) selected, `frags` lit as ever.
+// The part of block `bi` (`len` long) the selection holds: [from, to) offsets, or null. sel:
+// { from, to } points, `to` null for the start alone (its one character).
+function selectionIn(sel, bi, len) {
+  if (!sel) return null
+  const { from } = sel
+  const to = sel.to ?? { block: from.block, offset: from.offset + 1 }
+  if (bi < from.block || bi > to.block) return null
+  return [bi === from.block ? from.offset : 0, bi === to.block ? to.offset : len]
+}
+
+// A reply drawn while a span is chosen: every block as runs, `hints` ([{ block, offset, label }])
+// in their places, the selection `sel` so far, `frags` lit as ever.
 // [{ type: 'runs', runs, code, frags: [] }], as layout() gives.
-export function pickLayout(md, frags, { labels = [], from = null, to = null }) {
-  const { blocks, units } = sentencesOf(md)
-  const [lo, hi] = from == null ? [null, null] : [Math.min(from, to ?? from), Math.max(from, to ?? from)]
-  return blocks.map((b, bi) => {
-    const hints = new Map()
-    units.forEach((u, i) => {
-      if (u.block === bi && labels[i]) hints.set(u.start, labels[i])
-    })
-    const chosen = lo == null ? [] : units.slice(lo, hi + 1).filter(u => u.block === bi)
-    const sel = chosen.length ? [chosen[0].start, chosen[chosen.length - 1].end] : null
+export function pickLayout(md, frags, { hints = [], sel = null }) {
+  return blocksOf(md).map((b, bi) => {
+    const at = new Map(hints.filter(h => h.block === bi).map(h => [h.offset, h.label]))
     const lit = frags?.length ? litMask(b.text, frags).lit : null
-    return { type: 'runs', runs: paintRuns(b.segs, { lit, sel, hints }), code: b.code, frags: [] }
+    return { type: 'runs', runs: paintRuns(b.segs, { lit, sel: selectionIn(sel, bi, b.text.length), hints: at }), code: b.code, frags: [] }
   })
 }
 
-// The text of units a..b as a copy takes it: each block's stretch, blocks apart by a blank line.
-export function spanOf(md, a, b) {
-  const { blocks, units } = sentencesOf(md)
-  const picked = units.slice(Math.min(a, b), Math.max(a, b) + 1)
+// The text from one point to another as a copy takes it: blocks apart by a blank line.
+export function spanText(md, from, to) {
+  const blocks = blocksOf(md)
   const parts = []
-  for (const bi of new Set(picked.map(u => u.block))) {
-    const us = picked.filter(u => u.block === bi)
-    parts.push(blocks[bi].text.slice(us[0].start, us[us.length - 1].end))
+  for (let bi = from.block; bi <= to.block; bi++) {
+    parts.push(blocks[bi].text.slice(bi === from.block ? from.offset : 0, bi === to.block ? to.offset : undefined))
   }
   return parts.join('\n\n')
 }

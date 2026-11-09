@@ -357,8 +357,8 @@ test('the hotkeys editor: modifier toggles and a letter field, saved into keybin
 
   // a row picked opens its editor, alt ticked for a row with no key yet (`a` is the height row's)
   expect((await keys.find({ key: 'chat-marks-key-row-mark' }))?.props.hotkey).toBe('s')
-  // each row says what its key does
-  expect(await keys.find({ type: 'Text', text: /Jump to the next long reply, mark or highlight/ })).toBeDefined()
+  // what each key does is the guide tab's, not here
+  expect(await keys.find({ type: 'Text', text: /past the last, back to the first/ })).toBeUndefined()
   await keys.press({ key: 'chat-marks-key-row-mark' })
   expect(await keys.find({ type: 'Text', text: 'Editing: Mark / unmark' })).toBeDefined()
   expect((await keys.find({ key: 'chat-marks-mod-alt' }))?.props.label).toBe('[x] alt')
@@ -523,64 +523,99 @@ test('the settings tab shows the long-reply height and changes it', async ($, on
   expect((await $.command.run({ command: 'mark', args: 'auto' })).text).toMatch(/No reply is marked by itself/)
 })
 
-test('alt+y with no new selection: hints on a reply\'s sentences; a first and a last are copied, y highlights', async ($, on) => {
-  const text = long('前言一句。重點在這裡。')
+const FIELD = 'chat-marks-choose-field'
+// what the reply shows: its hints (amber), its selection (blue)
+const hintsIn = async (msg: any) => (await msg.findAll({ type: 'Text' })).filter((x: any) => x.props.backgroundColor === AMBER).map((x: any) => x.text)
+const selectedIn = async (msg: any) =>
+  (await msg.findAll({ type: 'Text' })).filter((x: any) => x.props.backgroundColor === '#264f78').map((x: any) => x.text).join('')
+const type = (pane: any, text: string) => pane.input({ key: FIELD, text, kind: 'change' })
+
+test('alt+y by keys: two letters land on the one place they match; an end\'s hint copies the span; n leaves it at that', async ($, on) => {
+  const text = long('See https://x.dev/a/b for docs. Then more.')
   const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }] }
-  const { toasts, opened } = stub(on, world)
+  const { opened } = stub(on, world)
   const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
   const hint = await $.ui.mount(HINT)
 
+  // no letters on the replies first: straight to typing
   await hint.press({ key: 'chat-marks-hl' })
-  expect(opened).toEqual(['chat-marks-pick'])
-  const picker = await $.ui.mount(pane('chat-marks-pick'))
-  expect(await picker.find({ type: 'Text', text: /pick sentences in it by keys/ })).toBeDefined()
-  await picker.press({ key: 'chat-marks-pick-0' })
-  await picker.unmount()
-  expect(opened.at(-1)).toBe('chat-marks-choose')
-
-  // a hint before each sentence, drawn in the reply itself
-  const hints = async () => (await msg.findAll({ type: 'Text' })).filter((x: any) => x.props.backgroundColor === AMBER).map((x: any) => x.text)
-  expect((await hints()).slice(0, 3)).toEqual(['a', 's', 'd'])
+  expect(opened).toEqual(['chat-marks-choose'])
   const chooser = await $.ui.mount(pane('chat-marks-choose'))
-  expect(await chooser.find({ type: 'Text', text: /first sentence/ })).toBeDefined()
+  expect(await chooser.find({ type: 'Text', text: /^Start: type its first two letters/ })).toBeDefined()
 
-  // the same hint twice: that sentence alone
-  await chooser.press({ key: 'chat-marks-hint-s' })
-  expect(await chooser.find({ type: 'Text', text: /From "重點在這裡。"/ })).toBeDefined()
-  await chooser.press({ key: 'chat-marks-hint-s' })
-  expect(world.copies).toEqual(['重點在這裡。'])
-  expect(await chooser.find({ type: 'Text', text: 'Copied 6 characters. Highlight it?' })).toBeDefined()
-  const selected = (await msg.findAll({ type: 'Text' })).filter((x: any) => x.props.backgroundColor === '#264f78')
-  expect(selected.map((x: any) => x.text).join('')).toBe('重點在這裡。')
-  expect(await hints()).toEqual([])
+  // (a digit: no Boshiamy code has one, and the text has not these two)
+  await type(chooser, 'x')
+  await type(chooser, 'x9')
+  expect(await chooser.find({ type: 'Text', text: /Nothing on screen matches "x9"/ })).toBeDefined()
 
-  await chooser.press({ key: 'chat-marks-choose-yes' })
-  expect(toasts.at(-1)).toBe('Highlighted')
-  expect(await lit(msg)).toEqual(['重點在這裡。'])
+  // `ht` is only in the URL: the start is taken at once, and the end hints follow each place it may end
+  await type(chooser, 'ht')
+  expect(await chooser.find({ type: 'Text', text: /^From "https:\/\/x\.de/ })).toBeDefined()
+  expect(await selectedIn(msg)).toBe('h')
+  expect((await hintsIn(msg)).slice(0, 3)).toEqual(['a', 's', 'd'])
+
+  await type(chooser, 'a')
+  expect(world.copies).toEqual(['https://x.dev/a/b'])
+  expect(await chooser.find({ type: 'Text', text: 'Copied 17 characters. Highlight it?' })).toBeDefined()
+  expect(await selectedIn(msg)).toBe('https://x.dev/a/b')
+  expect(await hintsIn(msg)).toEqual([])
+
+  await type(chooser, 'n')
+  expect(await lit(msg)).toEqual([])
+  expect(await selectedIn(msg)).toBe('')
 })
 
-test('two-letter hints: the first letter narrows them, the second picks', async ($, on) => {
-  // 30 sentences: more than the 23 letters, so some hints take two
-  const text = Array.from({ length: 30 }, (_, i) => `第${i + 1}句。`).join('\n')
+test('alt+y by keys: a Chinese start by its Boshiamy code, picked among two by its hint; Enter highlights', async ($, on) => {
+  // 重's Boshiamy code starts gq
+  const text = long('這是重點。重要的事，要記得。')
   const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }] }
-  stub(on, world)
-  const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 30, of: 31 }))
+  const { toasts } = stub(on, world)
+  const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
   const hint = await $.ui.mount(HINT)
   await hint.press({ key: 'chat-marks-hl' })
-  const picker = await $.ui.mount(pane('chat-marks-pick'))
-  await picker.press({ key: 'chat-marks-pick-0' })
   const chooser = await $.ui.mount(pane('chat-marks-choose'))
-  // 22 single letters, then m + a letter
-  await chooser.press({ key: 'chat-marks-hint-m' })
-  expect(await chooser.find({ type: 'Text', text: /^m…/ })).toBeDefined()
-  expect(await chooser.find({ key: 'chat-marks-hint-a' })).toBeDefined()
-  await chooser.press({ key: 'chat-marks-hint-a' })
-  expect(await chooser.find({ type: 'Text', text: /From "第23句。"/ })).toBeDefined()
-  await chooser.press({ key: 'chat-marks-hint-m' })
-  await chooser.press({ key: 'chat-marks-hint-s' })
-  expect(world.copies).toEqual(['第23句。\n第24句。'])
-  await chooser.press({ key: 'chat-marks-choose-no' })
-  expect(await lit(msg)).toEqual([])
+
+  await type(chooser, 'gq')
+  expect(await chooser.find({ type: 'Text', text: '2 places: type the hint of the start' })).toBeDefined()
+  expect(await hintsIn(msg)).toEqual(['a', 's'])
+  await type(chooser, 's')
+  expect(await selectedIn(msg)).toBe('重')
+  // the first end: past the comma
+  await type(chooser, 'a')
+  expect(world.copies).toEqual(['重要的事，'])
+
+  await chooser.input({ key: FIELD, text: '' })
+  expect(toasts.at(-1)).toBe('Highlighted')
+  expect(await lit(msg)).toEqual(['重要的事，'])
+})
+
+test('alt+y by keys: / looks for the end by the two letters it ends on', async ($, on) => {
+  const text = long('alpha beta gamma delta.')
+  const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }] }
+  stub(on, world)
+  await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
+  const hint = await $.ui.mount(HINT)
+  await hint.press({ key: 'chat-marks-hl' })
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
+  await type(chooser, 'be')
+  await type(chooser, '/')
+  expect(await chooser.find({ type: 'Text', text: /type the end's last two letters/ })).toBeDefined()
+  await type(chooser, 'ma')
+  expect(world.copies).toEqual(['beta gamma'])
+})
+
+test('the guide tab says how each part works, with the keys it answers to', async ($, on) => {
+  const { files } = stub(on, {})
+  files.set(KEYFILE, JSON.stringify({ bindings: [{ context: 'Global', bindings: { 'alt+y': 'diff:nextSource' } }] }))
+  await $.command.run({ command: 'mark', args: 'guide' })
+  const panel = await $.ui.mount(pane('chat-marks'))
+  expect((await panel.find({ key: 'chat-marks-tab-guide' }))?.props.variant).toBe('primary')
+  expect((await panel.find({ key: 'chat-marks-tab-guide' }))?.props.hotkey).toBe('3')
+  const section = await panel.find({ key: 'chat-marks-guide-4' })
+  expect(section?.text).toMatch(/^Highlight by keys\s*alt\+y/)
+  expect(section?.text).toMatch(/Boshiamy code/)
+  // the marks list's own keys as set
+  expect(await panel.find({ type: 'Text', text: /j \/ k move and show the spot/ })).toBeDefined()
 })
 
 test('an auto mark not drawn since a reload is found in the transcript file', async ($, on) => {

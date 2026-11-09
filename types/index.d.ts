@@ -16,15 +16,15 @@ declare module 'claude-code' {
       marks: ChatMark[]
       highlights: Record<string, ChatHighlight>
       auto: ChatAutoMark[]
-      pick: { purpose: 'mark' | 'highlight'; items: ChatPickItem[] } | null
+      pick: { items: ChatPickItem[] } | null
       choose: {
-        id: string
-        key: string
-        labels: (string | null)[]
+        phase: 'start' | 'end' | 'confirm'
+        search: boolean
         typed: string
-        from: number | null
-        to: number | null
-        phase: 'from' | 'to' | 'confirm'
+        points: { id: string; block: number; offset: number; label?: string }[]
+        from: { id: string; block: number; offset: number } | null
+        to: { id: string; block: number; offset: number } | null
+        note: string | null
         frags?: string[]
         count?: number
         isCopied?: boolean
@@ -37,7 +37,7 @@ declare module 'claude-code' {
         total: number
       } | null
       panel: {
-        tab: 'marks' | 'keys'
+        tab: 'marks' | 'keys' | 'guide'
         mode: 'jump' | 'delete'
         cursor: string | null
         origin: { id: string; block: 'start' | 'end' } | null

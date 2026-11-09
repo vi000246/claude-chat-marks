@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
-  anchorOf, autoMarks, barCells, fractionOf, hangOf, hintLabels, hintOrder, jumpTarget, keysMeet, layout, linesOf, litOf,
-  normMap, padCells, pickLayout, plainOf, positions, previewOf, rowTops, rowsOf, selectionFragments, sentencesOf,
-  spanOf, splitAt, toggleFragments,
+  anchorOf, autoMarks, barCells, blocksOf, endsAfter, findTwo, fractionOf, hangOf, hintLabels, jumpTarget, keysMeet, layout,
+  linesOf, litOf, normMap, padCells, pickLayout, plainOf, positions, previewOf, rowOfPoint, rowTops, rowsOf,
+  selectionFragments, spanText, splitAt, toggleFragments,
 } from '../hooks/marks-core.mjs'
 
 const lit = parts => parts.filter(p => p.type === 'runs').flatMap(p => p.runs.filter(r => r.hl).map(r => r.text))
@@ -191,13 +191,40 @@ test('the bar: the stops in their cells, the one jumped to winning a shared cell
   assert.equal(cells.filter(c => c.isThumb).length, 3)
 })
 
-test('sentences: cut at 。！？ and a full stop before a space, a line of code or a table whole, a list\'s 1. kept', () => {
-  const md = '# 標題\n\n第一句。第二句！Third one. Fourth\n\n1. 項目一。\n2. 項目二\n\n```\nconst a = 1. b\n```\n\n| 甲。 | 乙 |\n|---|---|\n| 丙 | 丁 |'
-  const { blocks, units } = sentencesOf(md)
-  const texts = units.map(u => blocks[u.block].text.slice(u.start, u.end))
-  assert.deepEqual(texts, ['標題', '第一句。', '第二句！', 'Third one.', 'Fourth', '1. 項目一。', '2. 項目二', 'const a = 1. b', '| 甲。 | 乙 |', '| 丙 | 丁 |'])
-  // a table's rule row is not counted (near enough for which hints show first)
-  assert.deepEqual(units.map(u => u.line), [0, 2, 2, 2, 2, 4, 5, 8, 11, 12])
+// two letters -> characters whose Boshiamy code starts with them, as boshiamy.mjs gives them
+const bosh = two => new Set({ gq: '重', ao: '點' }[two] ?? '')
+
+test('two typed letters land on the same two characters in any case, or on a Chinese character by its Boshiamy code', () => {
+  const blocks = blocksOf('See HTtp and http.\n\n這是重點，重要的。')
+  assert.deepEqual(findTwo(blocks, 'ht', bosh), [{ block: 0, offset: 4, length: 2 }, { block: 0, offset: 13, length: 2 }])
+  assert.deepEqual(findTwo(blocks, 'gq', bosh), [{ block: 1, offset: 2, length: 1 }, { block: 1, offset: 5, length: 1 }])
+  // typed through an IME, the characters themselves
+  assert.deepEqual(findTwo(blocks, '重點', bosh), [{ block: 1, offset: 2, length: 2 }])
+})
+
+test('a span ends past a sentence\'s or a clause\'s punctuation, at a line\'s end, or at a URL\'s end', () => {
+  const md = '先看 https://x.dev/a/b。然後，「引用」再說: ok.\n第二行\n\n下一段'
+  const blocks = blocksOf(md)
+  const from = { block: 0, offset: 3 }
+  // what a span from `from` to each end takes, block by block
+  const upTo = p => (p.block === 0 ? blocks[0].text.slice(3, p.offset) : `…| ${blocks[p.block].text.slice(0, p.offset)}`)
+  assert.deepEqual(endsAfter(blocks, from).map(upTo), [
+    'https://x.dev/a/b',
+    'https://x.dev/a/b。',
+    'https://x.dev/a/b。然後，',
+    'https://x.dev/a/b。然後，「引用」再說:',
+    'https://x.dev/a/b。然後，「引用」再說: ok.',
+    'https://x.dev/a/b。然後，「引用」再說: ok.\n第二行',
+    '…| 下一段',
+  ])
+})
+
+test('a point\'s row counts the source lines above it, wrapped, past the blank row', () => {
+  const md = 'one\n' + 'x'.repeat(50) + '\nthree\n\nfour'
+  const blocks = blocksOf(md)
+  assert.equal(rowOfPoint(md, blocks, { block: 0, offset: 0 }, 40), 1)
+  assert.equal(rowOfPoint(md, blocks, { block: 0, offset: md.indexOf('three') }, 40), 1 + 1 + 2)
+  assert.equal(rowOfPoint(md, blocks, { block: 1, offset: 0 }, 40), 1 + 1 + 2 + 1 + 1)
 })
 
 test('hint labels: single letters while they last, then two with no label starting another', () => {
@@ -208,26 +235,24 @@ test('hint labels: single letters while they last, then two with no label starti
   assert.equal(hintLabels(9, 'abc').length, 9)
 })
 
-test('hints go first to the sentences on screen', () => {
-  const md = 'one.\ntwo.\nthree.\nfour.'
-  const { units } = sentencesOf(md)
-  // rows 1..4 hold the lines; rows 3 and 4 show
-  assert.deepEqual(hintOrder(md, units, 80, { first: 3, last: 4 }), [2, 3, 0, 1])
-  assert.deepEqual(hintOrder(md, units, 80, null), [0, 1, 2, 3])
-})
+test('a span being chosen: hints in their places, an end\'s past its last character, the selection drawn', () => {
+  const md = '前言。重點**開始**了。\n\n下一段的結尾'
+  const start = { block: 0, offset: 3 }
+  const ends = endsAfter(blocksOf(md), start)
+  const parts = pickLayout(md, [], { hints: ends.map((p, i) => ({ ...p, label: 'abc'[i] })), sel: { from: start, to: null } })
+  // an end's hint follows the character it ends on, the block's last one too
+  assert.deepEqual(parts[0].runs.map(r => (r.hint ? `[${r.text}]` : r.text)).join(''), '前言。重點開始了。[a]')
+  assert.deepEqual(parts[1].runs.map(r => (r.hint ? `[${r.text}]` : r.text)).join(''), '下一段的結尾[b]')
+  assert.equal(parts[0].runs.filter(r => r.sel).map(r => r.text).join(''), '重')
 
-test('picked sentences: labels drawn before them, the span selected, its text highlightable', () => {
-  const md = '前言一句。重點**開始**了。\n\n下一段的結尾。最後'
-  const parts = pickLayout(md, [], { labels: ['a', 'b', 'c', 'd', 'e'], from: 1, to: 2 })
-  assert.equal(parts.length, 2)
-  assert.deepEqual(parts[0].runs.filter(r => r.hint).map(r => r.text), ['a', 'b'])
-  assert.equal(parts[0].runs.filter(r => r.sel).map(r => r.text).join(''), '重點開始了。')
-  assert.equal(parts[1].runs.filter(r => r.sel).map(r => r.text).join(''), '下一段的結尾。')
-  const text = spanOf(md, 2, 1)
-  assert.equal(text, '重點開始了。\n\n下一段的結尾。')
+  const done = pickLayout(md, [], { sel: { from: start, to: ends[1] } })
+  assert.equal(done[0].runs.filter(r => r.sel).map(r => r.text).join(''), '重點開始了。')
+  assert.equal(done[1].runs.filter(r => r.sel).map(r => r.text).join(''), '下一段的結尾')
+  const text = spanText(md, start, ends[1])
+  assert.equal(text, '重點開始了。\n\n下一段的結尾')
   // what is copied lights up again as a highlight of the same words
   const lit = layout(md, selectionFragments(text))
-  assert.deepEqual(lit.filter(p => p.type === 'runs').map(p => litOf(p.runs)), ['重點開始了。', '下一段的結尾。'])
+  assert.deepEqual(lit.filter(p => p.type === 'runs').map(p => litOf(p.runs)), ['重點開始了。', '下一段的結尾'])
 })
 
 test('keys meet when equal, or one long enough is the head of the other', () => {

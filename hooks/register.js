@@ -6,11 +6,11 @@
 //   alt+j  next stop      alt+k  previous stop: auto marks, marks and highlights alike
 //   alt+y  highlight the mouse selection (Claude's replies); again on (part of) it takes it off,
 //          as does the button that shows while the pointer is over a highlighted block. With no
-//          new mouse selection: letters on the long replies, then hints on the sentences of the
-//          one picked; a first and a last hint copy that span and ask whether to highlight it
+//          new mouse selection, a span by keys: two letters for its start (easymotion-s2, Chinese
+//          by its Boshiamy code), a hint for its end; it is copied, then y highlights it
 //   the bar  above the prompt for a few seconds after alt+j / alt+k: where every stop lies in the
 //          conversation, the one jumped to, and about what the screen shows
-//   alt+o  the panel (also /mark), two tabs (1, 2):
+//   alt+o  the panel (also /mark), three tabs (1, 2, 3):
 //          marks    every mark and highlight in conversation order (no auto mark), a letter each;
 //                   j / k move the cursor and show the conversation there, a letter or Enter jumps
 //                   and closes, Escape closes and goes back to where it was opened; x deletes; 0
@@ -18,6 +18,7 @@
 //          settings the long-reply height, then the hotkeys: click a row, type, saved (/mark keys
 //                   opens here; the chords above are only what this author picked: the mod binds
 //                   nothing until someone sets them)
+//          guide    what each feature does and how, with the chords it answers to now (/mark guide)
 //   /mark next|prev|add|hl [words]|auto <rows>|off|on|color <#rrggbb>|lang en|zh
 //   /mark-clear  every mark and highlight of this session gone (auto marks are not the person's)
 //
@@ -40,10 +41,9 @@
 //   highlights  { <requestId>: { key, snippet, text, frags: [normalized line] } }
 //   auto        [{ key, id, snippet }]  the auto marks, worked out again at each turn's end; `id` the
 //               row it was last drawn under (null while none was), for a jump before it is redrawn
-//   pick        { purpose: 'mark' | 'highlight', items: [{ id, kind, key, snippet }] } while alt+m's
-//               (or alt+y's) letters are up, else null
-//   choose      { id, key, labels, typed, from, to, phase: 'from' | 'to' | 'confirm', ... } while a
-//               reply's sentences carry hints (labels by sentence), else null
+//   pick        { items: [{ id, kind, key, snippet }] } while alt+m's letters are up, else null
+//   choose      { phase: 'start' | 'end' | 'confirm', search, typed, points, from, to, note, ... }
+//               while alt+y picks a span by keys (see "highlighting by keys"), else null
 //   bar         { stops: [{ at, how, isCurrent }], thumb, n, total } while the bar shows
 //   panel       { tab, mode: 'jump' | 'delete', cursor: <target id>, origin, confirmClear } while
 //               the panel is up; origin: where Escape scrolls back to
@@ -58,10 +58,11 @@
 //                  toasts (three at most)
 
 import { atom, read, update } from 'claude-code'
+import { BOSHIAMY2 } from './boshiamy.mjs'
 import {
-  LETTERS, anchorOf, autoMarks, barCells, fractionOf, hangOf, hintLabels, hintOrder, jumpTarget, keyOf, keysMeet,
-  layout, linesOf, litOf, padCells, pickLayout, plainOf, positions, previewOf, rowTops, rowsOf, selectionFragments,
-  sentencesOf, snippetOf, spanOf, splitAt, toggleFragments,
+  LETTERS, anchorOf, autoMarks, barCells, blocksOf, endsAfter, findTwo, fractionOf, hangOf, hintLabels, jumpTarget, keyOf,
+  keysMeet, layout, linesOf, litOf, padCells, pickLayout, plainOf, positions, previewOf, rowOfPoint, rowTops, rowsOf,
+  selectionFragments, snippetOf, spanText, splitAt, toggleFragments,
 } from './marks-core.mjs'
 import { canon, chordFor, globalProblem, isPanelKey, rebind, unbind, usersOf } from './keys-core.mjs'
 import { LANGS, STRINGS } from './strings.mjs'
@@ -379,50 +380,76 @@ async function unmark($, id) {
 
 // alt+m: a letter over each long reply on screen and each message marked already, or over every
 // message when no long reply shows; nothing is marked until one is pressed.
-const markKey = $ => putLetters($, 'mark')
-
-// The letters over the messages on screen, for marking one (`mark`) or picking the reply whose
-// sentences get hints (`highlight`: Claude's replies alone, never one marked for being so).
-async function putLetters($, purpose) {
+async function markKey($) {
   if (await read($, pickAtom)) return closePick($)
   await closeChoose($)
   const t = await strings($)
   const visible = visibleNow()
   const pos = positions(await $.session.messages(), visible)
-  const shown = visible
-    .filter(v => pos.has(v.id) && (purpose === 'mark' || v.kind === 'assistant'))
-    .sort((a, b) => pos.get(a.id) - pos.get(b.id))
-  if (!shown.length) return toast($, purpose === 'mark' ? t.noScreen : t.noReplyOnScreen)
+  const shown = visible.filter(v => pos.has(v.id)).sort((a, b) => pos.get(a.id) - pos.get(b.id))
+  if (!shown.length) return toast($, t.noScreen)
   const minRows = (await autoRows($)) || DEFAULT_AUTO_ROWS
   const marks = await read($, marksAtom)
   const isLong = v => v.kind === 'assistant' && (seen.get(v.id)?.onScreen?.of ?? rowsOf(seen.get(v.id)?.text, bodyColumns())) >= minRows
-  const isMarked = v => purpose === 'mark' && marks.some(m => m.id === v.id || (m.kind === v.kind && m.key === v.key))
+  const isMarked = v => marks.some(m => m.id === v.id || (m.kind === v.kind && m.key === v.key))
   const offered = shown.some(isLong) ? shown.filter(v => isLong(v) || isMarked(v)) : shown
   const items = offered.slice(0, letters.length).map(({ id, kind, key, snippet, preview }) => ({ id, kind, key, snippet, preview }))
-  await update($, pickAtom, () => ({ purpose, items }))
-  const title = purpose === 'mark' ? t.pickTitle : t.hlPickTitle
-  await $.ui.open({ id: PICK_PANE, title, focus: true, closeOnEscape: true, rows: items.length + 2 })
+  await update($, pickAtom, () => ({ items }))
+  await $.ui.open({ id: PICK_PANE, title: t.pickTitle, focus: true, closeOnEscape: true, rows: items.length + 2 })
 }
 
 // ---- highlighting by keys ---------------------------------------------------------------
 //
-// alt+y with no new mouse selection: putLetters('highlight'), then the reply picked gets a hint
-// before each sentence (CHOOSE_PANE takes the keys): one hint for the first sentence, one for
-// the last (the same twice for one). The span is copied, and the pane asks whether to highlight
-// it too (or take its highlight off, when it is lit already): y or n.
+// alt+y with no new mouse selection. Everything is typed into one field of CHOOSE_PANE:
+//   start  two letters, easymotion-s2: the places on screen they land on (the same two characters,
+//          or a Chinese one by its Boshiamy code); one is taken at once, more get hints to type
+//   end    hints just past each place the span may end (a sentence's or a clause's punctuation,
+//          a line's end, a URL's); `/` instead: two letters, the end just past where they land
+//   then   the span is copied, and y (or Enter) highlights it, or takes its highlight off when it
+//          is lit already; n leaves it copied
+// A point here is { id, block, offset } (marks-core blocksOf), a hint's point with its `label`.
 
-// A reply picked by its letter: its sentences get their hints, the ones on screen the shortest.
-async function startChoose($, item) {
+const CHOOSE_FIELD = 'chat-marks-choose-field'
+const boshSets = new Map()
+const bosh = two => {
+  if (!boshSets.has(two)) boshSets.set(two, new Set(BOSHIAMY2[two] ?? ''))
+  return boshSets.get(two)
+}
+
+// Claude's replies on screen, in conversation order: { id, text, blocks, view }.
+async function repliesOnScreen($) {
+  const visible = visibleNow().filter(v => v.kind === 'assistant')
+  const pos = positions(await $.session.messages(), visible)
+  return visible
+    .filter(v => pos.has(v.id))
+    .sort((a, b) => pos.get(a.id) - pos.get(b.id))
+    .map(v => {
+      const s = seen.get(v.id)
+      return { id: v.id, text: s.text, blocks: blocksOf(s.text), view: s.onScreen }
+    })
+}
+
+// Hints for points ([{ id, block, offset }] in reading order, each reply's in `replies`): those on
+// a row the screen shows get the single letters.
+function labelled(points, replies) {
+  const of = new Map(replies.map(r => [r.id, r]))
+  const shows = p => {
+    const r = of.get(p.id)
+    const row = r && rowOfPoint(r.text, r.blocks, p, bodyColumns())
+    return !!r?.view && row >= r.view.first && row <= r.view.last
+  }
+  const order = [...points.filter(shows), ...points.filter(p => !shows(p))]
+  const labels = hintLabels(order.length, LETTERS)
+  const byPoint = new Map(order.map((p, i) => [p, labels[i]]))
+  return points.map(p => ({ ...p, label: byPoint.get(p) }))
+}
+
+async function startChoose($) {
   await closePick($)
   const t = await strings($)
-  const msg = seen.get(item.id)
-  const { units } = sentencesOf(msg?.text)
-  if (!units.length) return toast($, t.noSentences)
-  const order = hintOrder(msg.text, units, bodyColumns(), msg.onScreen)
-  const labels = []
-  hintLabels(units.length, LETTERS).forEach((label, k) => (labels[order[k]] = label))
-  await update($, chooseAtom, () => ({ id: item.id, key: item.key, labels, typed: '', from: null, to: null, phase: 'from' }))
-  await $.ui.open({ id: CHOOSE_PANE, title: t.chooseTitle, focus: true, closeOnEscape: true, rows: 3 })
+  if (!(await repliesOnScreen($)).length) return toast($, t.noReplyOnScreen)
+  await update($, chooseAtom, () => ({ phase: 'start', search: true, typed: '', points: [], from: null, to: null, note: null }))
+  await $.ui.open({ id: CHOOSE_PANE, title: t.chooseTitle, focus: true, closeOnEscape: true, rows: 4 })
 }
 
 async function closeChoose($) {
@@ -431,29 +458,72 @@ async function closeChoose($) {
   await $.ui.close({ id: CHOOSE_PANE })
 }
 
-// A letter typed while hints are up: a whole label picks its sentence; the first of two narrows
-// the hints to those it starts; anything else starts over.
-async function typeHint($, c) {
+const setChoose = ($, fields) => update($, chooseAtom, x => x && { ...x, ...fields })
+
+// The field changed: two letters to look for, a hint's letters, `/`, or y / n.
+async function typeChoose($, value) {
   const ch = await read($, chooseAtom)
-  if (!ch || ch.phase === 'confirm') return
-  const typed = ch.typed + c
-  const i = ch.labels.indexOf(typed)
-  if (i >= 0) return pickSentence($, i)
-  const narrows = ch.labels.some(l => l?.startsWith(typed))
-  await update($, chooseAtom, x => x && { ...x, typed: narrows ? typed : '' })
+  if (!ch) return
+  const v = String(value ?? '')
+  if (ch.phase === 'confirm') {
+    const c = v.slice(-1).toLowerCase()
+    if (c === 'y' || c === 'n') return answerChoose($, c === 'y')
+    return setChoose($, { typed: '' })
+  }
+  if (ch.search) {
+    const two = [...v.replace(/\s/g, '')].slice(0, 2).join('')
+    if ([...two].length < 2) return setChoose($, { typed: two, note: null })
+    return searchTwo($, ch, two)
+  }
+  if (ch.phase === 'end' && v.endsWith('/')) return setChoose($, { search: true, typed: '', points: [], note: null })
+  const typed = v.toLowerCase()
+  const hit = ch.points.find(p => p.label === typed)
+  if (hit) return ch.phase === 'start' ? chooseStart($, hit) : chooseEnd($, hit)
+  await setChoose($, { typed: ch.points.some(p => p.label?.startsWith(typed)) ? typed : '' })
 }
 
-// The first sentence, then the last: the span is copied and the pane asks about highlighting it.
-async function pickSentence($, i) {
+// Two letters typed: the start, or the end, where they land; one place is taken at once.
+async function searchTwo($, ch, two) {
+  const t = await strings($)
+  const replies = await repliesOnScreen($)
+  let found
+  if (ch.phase === 'start') {
+    found = replies.flatMap(r => findTwo(r.blocks, two, bosh).map(({ block, offset }) => ({ id: r.id, block, offset })))
+  } else {
+    const r = replies.find(x => x.id === ch.from.id) ?? replyOf(ch.from.id)
+    found = (r ? findTwo(r.blocks, two, bosh) : [])
+      .map(({ block, offset, length }) => ({ id: ch.from.id, block, offset: offset + length }))
+      .filter(p => p.block > ch.from.block || (p.block === ch.from.block && p.offset > ch.from.offset))
+  }
+  if (!found.length) return setChoose($, { typed: '', note: t.noMatch(two) })
+  if (found.length === 1) return ch.phase === 'start' ? chooseStart($, found[0]) : chooseEnd($, found[0])
+  await setChoose($, { search: false, typed: '', points: labelled(found, replies), note: null })
+}
+
+// A reply by its row, from what was drawn: { id, text, blocks, view }.
+function replyOf(id) {
+  const s = seen.get(id)
+  return s && { id, text: s.text, blocks: blocksOf(s.text), view: s.onScreen }
+}
+
+// The start taken: hints go just past each place the span may end.
+async function chooseStart($, p) {
+  const r = replyOf(p.id)
+  const from = { id: p.id, block: p.block, offset: p.offset }
+  const ends = endsAfter(r.blocks, from).map(({ block, offset }) => ({ id: p.id, block, offset }))
+  await setChoose($, { phase: 'end', search: false, typed: '', from, points: labelled(ends, [r]), note: null })
+}
+
+// The end taken: the span is copied, and the pane asks about highlighting it.
+async function chooseEnd($, p) {
   const ch = await read($, chooseAtom)
-  if (ch.phase === 'from') return update($, chooseAtom, x => x && { ...x, from: i, typed: '', phase: 'to' })
-  const msg = seen.get(ch.id)
-  const text = spanOf(msg.text, ch.from, i)
+  const text = spanText(seen.get(ch.from.id).text, ch.from, p)
   const frags = selectionFragments(text)
   const copied = await $.ui.copy({ text }).catch(() => ({ isCopied: false }))
-  const removing = toggleFragments((await read($, hlAtom))[ch.id]?.frags ?? [], frags).removed
-  await update($, chooseAtom, x => x && {
-    ...x, to: i, typed: '', phase: 'confirm', frags, count: [...text.replace(/\s+/g, '')].length, isCopied: !!copied?.isCopied, removing,
+  const removing = toggleFragments((await read($, hlAtom))[ch.from.id]?.frags ?? [], frags).removed
+  await setChoose($, {
+    phase: 'confirm', search: false, typed: '', points: [], to: { id: p.id, block: p.block, offset: p.offset }, note: null,
+    frags, count: [...text.replace(/\s+/g, '')].length, isCopied: !!copied?.isCopied, removing,
   })
 }
 
@@ -462,8 +532,9 @@ async function answerChoose($, yes) {
   const ch = await read($, chooseAtom)
   await closeChoose($)
   if (!ch || !yes) return
-  const msg = seen.get(ch.id)
-  if (msg && ch.frags?.length) await toggleHighlight($, await strings($), ch.id, msg, ch.frags)
+  const msg = seen.get(ch.from.id)
+  if (!msg || !ch.frags?.length) return toast($, (await strings($)).tooShort)
+  await toggleHighlight($, await strings($), ch.from.id, msg, ch.frags)
 }
 
 // ---- highlights -----------------------------------------------------------------
@@ -471,12 +542,12 @@ async function answerChoose($, yes) {
 // alt+y: the mouse selection lit (or its highlight off); with none made since the last alt+y, the
 // sentences of a reply picked by keys instead.
 async function highlight($) {
-  if ((await read($, pickAtom))?.purpose === 'highlight') return closePick($)
   await closePick($)
   const t = await strings($)
   const sel = await $.ui.selection()
   const isNew = sel && !(lastSel && lastSel.text === sel.text && lastSel.requestId === sel.requestId)
-  if (!isNew) return putLetters($, 'highlight')
+  if (!isNew) return (await read($, chooseAtom)) ? closeChoose($) : startChoose($)
+  await closeChoose($)
   lastSel = { text: sel.text, requestId: sel.requestId }
   const msg = sel.requestId && seen.get(sel.requestId)
   if (!msg) return toast($, t.oneMessage)
@@ -1030,17 +1101,19 @@ async function headFor($, e, t, kind) {
   const key = keyOf(e.props.text)
   const isAuto = kind === 'assistant' && auto.some(a => a.id === e.requestId || keysMeet(a.key, key))
   const isMarked = marks.some(isRow(e, kind))
-  return headLine($, e, t, color, n >= 0 ? letters[n] : null, isMarked, isAuto, isMarked && pick?.purpose !== 'highlight')
+  return headLine($, e, t, color, n >= 0 ? letters[n] : null, isMarked, isAuto)
 }
 
-// The reply whose sentences are being picked: every block with its hints (narrowed to those the
-// letters typed start) and the span chosen so far. Null for any other row.
+// A reply while alt+y picks a span by keys: every block with the hints on this row (narrowed to
+// those the letters typed start) and the span chosen so far. Null for a row with neither.
 async function chooseParts($, e) {
   const ch = await read($, chooseAtom)
-  if (!ch || !(ch.id === e.requestId || keysMeet(ch.key, keyOf(e.props.text)))) return null
-  const labels = ch.phase === 'confirm' ? [] : ch.labels.map(l => (l?.startsWith(ch.typed) ? l : undefined))
-  const frags = (await read($, hlAtom))[ch.id]?.frags ?? []
-  return pickLayout(e.props.text, frags, { labels, from: ch.from, to: ch.to })
+  if (!ch) return null
+  const hints = ch.search ? [] : ch.points.filter(p => p.id === e.requestId && p.label?.startsWith(ch.typed))
+  const isMine = ch.from?.id === e.requestId
+  if (!hints.length && !isMine) return null
+  const frags = (await read($, hlAtom))[e.requestId]?.frags ?? []
+  return pickLayout(e.props.text, frags, { hints, sel: isMine ? { from: ch.from, to: ch.to } : null })
 }
 
 function withHead($, e, head, theirs) {
@@ -1128,23 +1201,18 @@ async function drawKeysTab($, e, t) {
   }
   const armed = state?.armed ?? null
   // a row: the action and its chord, and under it, dim, what the chord does
-  const row = (slot, i) => Box({
-    flexDirection: 'column',
+  // a row: the setting and its value now (what each does is on the guide tab)
+  const row = (slot, i) => Button({
+    key: 'chat-marks-key-row-' + slot,
+    label: t.slots[slot],
+    plain: true,
+    // while editing, letters are typed into the field: the rows give up theirs
+    ...(armed ? {} : { hotkey: LETTERS[i] }),
+    ...(armed === slot ? { variant: 'primary' } : {}),
+    onPress: safe($, () => armSlot($, slot)),
     children: [
-      Button({
-        key: 'chat-marks-key-row-' + slot,
-        label: t.slots[slot],
-        plain: true,
-        // while editing, letters are typed into the field: the rows give up theirs
-        ...(armed ? {} : { hotkey: LETTERS[i] }),
-        ...(armed === slot ? { variant: 'primary' } : {}),
-        onPress: safe($, () => armSlot($, slot)),
-        children: [
-          Text({ children: [padCells(t.slots[slot], 24)] }),
-          current(slot) ? Text({ children: [current(slot)] }) : Text({ dimColor: true, children: [t.notSet] }),
-        ],
-      }),
-      Text({ dimColor: true, children: ['   ' + t.slotHelp[slot]] }),
+      Text({ children: [padCells(t.slots[slot], 24)] }),
+      current(slot) ? Text({ children: [current(slot)] }) : Text({ dimColor: true, children: [t.notSet] }),
     ],
   })
   const isGlobal = GLOBAL_SLOTS.includes(armed)
@@ -1238,10 +1306,33 @@ async function drawKeysTab($, e, t) {
     Text({ dimColor: true, children: [t.keysHint] }),
     ...(editor ? [editor] : []),
     ...(state?.note ? [Text({ ...(tone ? { color: tone } : {}), children: [state.note] })] : []),
-    Box({ flexDirection: 'column', gap: 1, children: SETTING_SLOTS.map(s => row(s, slots.indexOf(s))) }),
-    Box({ flexDirection: 'column', gap: 1, children: GLOBAL_SLOTS.map(s => row(s, slots.indexOf(s))) }),
-    Box({ flexDirection: 'column', gap: 1, children: PANEL_SLOTS.map(s => row(s, slots.indexOf(s))) }),
+    Box({ flexDirection: 'column', children: SETTING_SLOTS.map(s => row(s, slots.indexOf(s))) }),
+    Box({ flexDirection: 'column', children: GLOBAL_SLOTS.map(s => row(s, slots.indexOf(s))) }),
+    Box({ flexDirection: 'column', children: PANEL_SLOTS.map(s => row(s, slots.indexOf(s))) }),
   ]
+}
+
+// The guide tab: a section per feature, the chords it answers to now beside its title.
+async function drawGuideTab($, e, t) {
+  const { Box, Text } = $.ui.resolve(e)
+  const doc = await readBindings($, await bindingsPath($))
+  const chord = slot => (doc && chordFor(doc, ACTIONS[slot])) || t.notSet
+  const fill = line => line.replace(/\{(down|up|remove)\}/g, (_, k) => keys[k])
+  return t.guide.map((g, i) => Box({
+    key: 'chat-marks-guide-' + i,
+    flexDirection: 'column',
+    children: [
+      Box({
+        flexDirection: 'row',
+        gap: 2,
+        children: [
+          Text({ weight: 'bold', children: [g.title] }),
+          ...(g.slots ? [Text({ color: 'warning', children: [g.slots.map(chord).join(' / ')] })] : []),
+        ],
+      }),
+      ...g.lines.map(l => Text({ dimColor: true, children: ['  ' + fill(l)] })),
+    ],
+  }))
 }
 
 // ---- register -----------------------------------------------------------------
@@ -1326,6 +1417,7 @@ export function register(on) {
     const arg = verb.toLowerCase()
     const value = (rest[0] ?? '').toLowerCase()
     if (arg === 'keys' || arg === 'settings') await openPanel($, 'keys')
+    else if (arg === 'guide' || arg === 'help') await openPanel($, 'guide')
     else if (arg === 'next' || arg === 'j') await jump($, 1)
     else if (arg === 'prev' || arg === 'k') await jump($, -1)
     else if (arg === 'add' || arg === 'm') await markKey($)
@@ -1359,57 +1451,66 @@ export function register(on) {
     return withHead($, e, head, await next(e))
   })
 
-  // alt+m's letters (and alt+y's, picking a reply): one per message offered, the same letter over
-  // the message itself.
+  // alt+m's letters: one per message offered, the same letter over the message itself.
   on('ui.render', { component: 'Pane', requestId: PICK_PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const t = await strings($)
     const pickState = await read($, pickAtom)
-    const isMarking = pickState?.purpose !== 'highlight'
     const marks = await read($, marksAtom)
     const room = Math.max(16, e.props.bodyColumns - 14)
     const rows = (pickState?.items ?? []).map((it, i) => {
-      const isMarked = isMarking && marks.some(m => m.id === it.id)
+      const isMarked = marks.some(m => m.id === it.id)
       const text = `[${it.kind === 'user' ? t.you : 'Claude'}] ${snippetOf(it.snippet, room)}`
       return Button({
         key: `${PICK_PANE}-${i}`,
         hotkey: letters[i],
         plain: true,
         label: (isMarked ? t.unmarkPrefix : '') + text,
-        onPress: safe($, () => (isMarking ? toggleMarkOn($, it) : startChoose($, it))),
+        onPress: safe($, () => toggleMarkOn($, it)),
         children: isMarked ? [Text({ color: 'error', children: [t.unmarkPrefix] }), Text({ children: [text] })] : [text],
       })
     })
-    return Box({ flexDirection: 'column', children: [Text({ dimColor: true, children: [isMarking ? t.pickHint : t.hlPickHint] }), ...rows] })
+    return Box({ flexDirection: 'column', children: [Text({ dimColor: true, children: [t.pickHint] }), ...rows] })
   })
 
-  // alt+y's sentences: what to press now, and (hidden) a button for each letter that goes on a
-  // hint; then the copy's word and y / n.
+  // alt+y by keys: what to type now, the field everything is typed into, and at the end the word
+  // on the copy with y / n.
   on('ui.render', { component: 'Pane', requestId: CHOOSE_PANE }, async ($, e) => {
-    const { Box, Button, Text } = $.ui.resolve(e)
+    const { Box, Button, Input, Text } = $.ui.resolve(e)
     const t = await strings($)
     const ch = await read($, chooseAtom)
     if (!ch) return Box({ children: [] })
+    const field = Input({
+      key: CHOOSE_FIELD,
+      label: '> ',
+      value: ch.typed,
+      autoFocus: true,
+      onInput: value => typeChoose($, value),
+      onSubmit: safe($, async () => {
+        if ((await read($, chooseAtom))?.phase === 'confirm') await answerChoose($, true)
+      }),
+    })
     if (ch.phase === 'confirm') {
-      const yn = (key, hotkey, label, yes) => Button({ key, hotkey, label, onPress: safe($, () => answerChoose($, yes)) })
+      const yn = (key, label, yes) => Button({ key, label, onPress: safe($, () => answerChoose($, yes)) })
       return Box({
         flexDirection: 'column',
         children: [
           Text({ children: [(ch.isCopied ? t.copied(ch.count) : t.notCopied) + ' ' + (ch.removing ? t.askUnhighlight : t.askHighlight)] }),
-          Box({ flexDirection: 'row', gap: 2, children: [yn('chat-marks-choose-yes', 'y', t.yes, true), yn('chat-marks-choose-no', 'n', t.no, false)] }),
+          Box({ flexDirection: 'row', gap: 2, children: [field, yn('chat-marks-choose-yes', t.yes, true), yn('chat-marks-choose-no', t.no, false)] }),
         ],
       })
     }
-    const next = [...new Set(ch.labels.filter(l => l?.startsWith(ch.typed)).map(l => l[ch.typed.length]))]
-    const keys = next.map(c => Button({ key: 'chat-marks-hint-' + c, label: c, hotkey: c, onPress: safe($, () => typeHint($, c)) }))
-    const msg = seen.get(ch.id)
-    const from = ch.from == null || !msg ? '' : snippetOf(spanOf(msg.text, ch.from, ch.from), 30)
+    const msg = ch.from && seen.get(ch.from.id)
+    const from = msg ? snippetOf(spanText(msg.text, ch.from, { ...ch.from, offset: ch.from.offset + 12 }), 12) : ''
+    const say = ch.phase === 'start'
+      ? (ch.search ? t.chooseStart : t.chooseStartHint(ch.points.length))
+      : (ch.search ? t.chooseEndSearch(from) : t.chooseEnd(from))
     return Box({
       flexDirection: 'column',
       children: [
-        Text({ children: [ch.phase === 'from' ? t.chooseFrom : t.chooseTo(from)] }),
-        Text({ dimColor: true, children: [ch.typed ? t.typedSoFar(ch.typed) : t.chooseHint] }),
-        Box({ display: 'none', children: keys }),
+        Text({ children: [say] }),
+        field,
+        Text(ch.note ? { color: 'warning', children: [ch.note] } : { dimColor: true, children: [t.chooseHint] }),
       ],
     })
   })
@@ -1424,7 +1525,7 @@ export function register(on) {
     return theirs ? Box({ flexDirection: 'column', children: [theirs, mine] }) : mine
   })
 
-  // The panel: its tabs (1 marks, 2 hotkeys), then the tab shown.
+  // The panel: its tabs (1 marks, 2 settings, 3 guide), then the tab shown.
   on('ui.render', { component: 'Pane', requestId: PANEL }, async ($, e) => {
     const { Box, Button } = $.ui.resolve(e)
     const t = await strings($)
@@ -1439,7 +1540,7 @@ export function register(on) {
       plain: true,
       ...(tab === name ? { variant: 'primary' } : { dimColor: true }),
       // the focus ring was on an element of the tab going away: keep it in the panel, on this tab,
-      // or the panel loses the keyboard and 1 / 2 stop answering
+      // or the panel loses the keyboard and 1 / 2 / 3 stop answering
       onPress: safe($, async () => {
         await update($, panelAtom, x => x && { ...x, tab: name, mode: 'jump', confirmClear: false })
         await $.ui.focus({ requestId: PANEL, key: 'chat-marks-tab-' + name }).catch(() => undefined)
@@ -1454,8 +1555,12 @@ export function register(on) {
       flexDirection: 'column',
       gap: 1,
       children: [
-        Box({ flexDirection: 'row', gap: 2, children: [tabButton('marks', '1', t.tabMarks), tabButton('keys', '2', t.tabKeys)] }),
-        ...(tab === 'keys' ? await drawKeysTab($, e, t) : await drawMarksTab($, e, t, panel)),
+        Box({
+          flexDirection: 'row',
+          gap: 2,
+          children: [tabButton('marks', '1', t.tabMarks), tabButton('keys', '2', t.tabKeys), tabButton('guide', '3', t.tabGuide)],
+        }),
+        ...(tab === 'keys' ? await drawKeysTab($, e, t) : tab === 'guide' ? await drawGuideTab($, e, t) : await drawMarksTab($, e, t, panel)),
         toggle,
       ],
     })
