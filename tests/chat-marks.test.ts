@@ -589,8 +589,10 @@ test('alt+y by keys: a Chinese start by its Boshiamy code, picked among two by i
   expect(world.copies).toEqual(['重要的事，'])
 
   // Enter presses the focused yes
-  expect((await chooser.find({ key: 'chat-marks-choose-yes' }))?.props.autoFocus).toBe(true)
-  await chooser.press({ key: 'chat-marks-choose-yes' })
+  // the button Enter presses, the same one from the first step on, is yes now
+  const enter = await chooser.find({ key: 'chat-marks-choose-enter' })
+  expect([enter?.props.label, enter?.props.autoFocus]).toEqual(['y  yes', true])
+  await chooser.press({ key: 'chat-marks-choose-enter' })
   expect(toasts.at(-1)).toBe('Highlighted')
   expect(await lit(msg)).toEqual(['重要的事，'])
 })
@@ -608,6 +610,28 @@ test('alt+y by keys: / looks for the end by the two letters it ends on', async (
   expect(await chooser.find({ type: 'Text', text: "Type the end's last two letters" })).toBeDefined()
   await type(chooser, 'ma')
   expect(world.copies).toEqual(['beta gamma'])
+})
+
+test('alt+y by keys: one letter and Enter find a character whose code is that letter alone', async ($, on) => {
+  // 四's Boshiamy code is f alone: no two letters find it
+  const text = long('第四章，四個重點。')
+  const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }] }
+  stub(on, world)
+  const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
+  const hint = await $.ui.mount(HINT)
+  await hint.press({ key: 'chat-marks-hl' })
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
+  expect((await chooser.find({ key: 'chat-marks-choose-enter' }))?.props.label).toBe('Enter: one-letter code')
+  await type(chooser, 'f')
+  await chooser.press({ key: 'chat-marks-choose-enter' })
+  expect(await chooser.find({ type: 'Text', text: '2 places: type a hint' })).toBeDefined()
+  expect(await hintsIn(msg)).toEqual(['a', 's'])
+  // picking a hint, the same button is cancel
+  expect((await chooser.find({ key: 'chat-marks-choose-enter' }))?.props.label).toBe('Esc: cancel')
+  await type(chooser, 's')
+  expect(await selectedIn(msg)).toBe('四')
+  await type(chooser, 'a')
+  expect(world.copies).toEqual(['四個重點。'])
 })
 
 test('alt+y by keys without the keyboard (text in the prompt): the pane says which key moves it there', async ($, on) => {

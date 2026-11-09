@@ -58,7 +58,7 @@
 //                  toasts (three at most)
 
 import { atom, read, update } from 'claude-code'
-import { BOSHIAMY2 } from './boshiamy.mjs'
+import { BOSHIAMY1, BOSHIAMY2 } from './boshiamy.mjs'
 import {
   LETTERS, anchorOf, autoMarks, barCells, blocksOf, endsAfter, findTwo, fractionOf, hangOf, hintLabels, jumpTarget, keyOf,
   keysMeet, layout, linesOf, litOf, padCells, pickLayout, plainOf, positions, previewOf, rowOfPoint, rowTops, rowsOf,
@@ -404,7 +404,8 @@ async function markKey($) {
 // hidden Button per key: a field's text is the person's until the hook draws another, so it cannot
 // be cleared between steps):
 //   start  two letters, easymotion-s2: the places on screen they land on (the same two characters,
-//          or a Chinese one by its Boshiamy code); one is taken at once, more get hints to type
+//          or a Chinese one by its Boshiamy code; one letter and Enter: a character whose code is
+//          that letter alone); one is taken at once, more get hints to type
 //   end    hints just past each place the span may end (a sentence's or a clause's punctuation,
 //          a line's end, a URL's); `s` instead (no end hint is s): two letters, the end just past
 //          where they land
@@ -421,6 +422,7 @@ const CHOOSE_KEYS = 'abcdefghijklmnopqrstuvwxyz0123456789'
 const END_SEARCH = 's'
 const END_LETTERS = LETTERS.replace(END_SEARCH, '')
 const chooseKey = c => 'chat-marks-ch-' + c.charCodeAt(0)
+const CHOOSE_ENTER = 'chat-marks-choose-enter'
 const FOCUS_ACTION = 'abovePrompt:focus'
 const boshSets = new Map()
 const bosh = two => {
@@ -495,19 +497,36 @@ async function keyChoose($, c) {
 }
 
 // Two letters typed: the start, or the end, where they land; one place is taken at once.
-async function searchTwo($, ch, two) {
+const searchTwo = ($, ch, two) => searchBy($, ch, two, blocks => findTwo(blocks, two, bosh))
+
+// One letter, then Enter: the characters whose Boshiamy code is that letter alone (四 is f), which
+// no two letters find.
+async function enterChoose($) {
+  const ch = await read($, chooseAtom)
+  if (!ch?.search || !/^[a-z]$/.test(ch.typed)) return
+  const chars = new Set(BOSHIAMY1[ch.typed] ?? '')
+  await searchBy($, ch, ch.typed, blocks => blocks.flatMap((b, block) => {
+    const at = []
+    for (let i = 0; i < b.text.length; i++) if (chars.has(b.text[i])) at.push({ block, offset: i, length: 1 })
+    return at
+  }))
+}
+
+// Where a search lands (find: blocks -> [{ block, offset, length }]): the start, or the end just past
+// it in the start's reply. None says so; one is taken at once; more get hints.
+async function searchBy($, ch, typed, find) {
   const t = await strings($)
   const replies = await repliesOnScreen($)
   let found
   if (ch.phase === 'start') {
-    found = replies.flatMap(r => findTwo(r.blocks, two, bosh).map(({ block, offset }) => ({ id: r.id, block, offset })))
+    found = replies.flatMap(r => find(r.blocks).map(({ block, offset }) => ({ id: r.id, block, offset })))
   } else {
     const r = replies.find(x => x.id === ch.from.id) ?? replyOf(ch.from.id)
-    found = (r ? findTwo(r.blocks, two, bosh) : [])
+    found = (r ? find(r.blocks) : [])
       .map(({ block, offset, length }) => ({ id: ch.from.id, block, offset: offset + length }))
       .filter(p => p.block > ch.from.block || (p.block === ch.from.block && p.offset > ch.from.offset))
   }
-  if (!found.length) return setChoose($, { typed: '', note: t.noMatch(two) })
+  if (!found.length) return setChoose($, { typed: '', note: t.noMatch(typed) })
   if (found.length === 1) return ch.phase === 'start' ? chooseStart($, found[0]) : chooseEnd($, found[0])
   const alphabet = ch.phase === 'end' ? END_LETTERS : LETTERS
   await setChoose($, { search: false, typed: '', points: labelled(found, replies, alphabet), note: null })
@@ -1502,7 +1521,10 @@ export function register(on) {
       const doc = await readBindings($, await bindingsPath($))
       focusLine = [Text({ color: 'warning', children: [t.focusHere((doc && chordFor(doc, FOCUS_ACTION)) || 'ctrl+x tab')] })]
     }
-    const button = (key, label, fn, isFirst) => Button({ key, label, ...(isFirst ? { autoFocus: true } : {}), onPress: safe($, fn) })
+    // The button Enter presses, the same element in every step (its label and act change), so the
+    // focus ring on it never loses its place and the pane keeps the keyboard: one letter typed, the
+    // one-letter codes; picking a hint, cancel; at the end, yes. It also gives ctrl+x tab a place.
+    const enter = (label, fn) => Button({ key: CHOOSE_ENTER, label, autoFocus: true, onPress: safe($, fn) })
     if (ch.phase === 'confirm') {
       return Box({
         flexDirection: 'column',
@@ -1513,8 +1535,8 @@ export function register(on) {
             flexDirection: 'row',
             gap: 2,
             children: [
-              button('chat-marks-choose-yes', t.yes, () => answerChoose($, true), true),
-              button('chat-marks-choose-no', t.no, () => answerChoose($, false)),
+              enter(t.yes, () => answerChoose($, true)),
+              Button({ key: 'chat-marks-choose-no', label: t.no, onPress: safe($, () => answerChoose($, false)) }),
             ],
           }),
           keyButtons,
@@ -1532,7 +1554,7 @@ export function register(on) {
         Text({ children: [say] }),
         Text({ weight: 'bold', children: ['> ' + ch.typed] }),
         ...(ch.note ? [Text({ color: 'warning', children: [ch.note] })] : []),
-        button('chat-marks-choose-cancel', t.cancelEsc, () => closeChoose($), true),
+        ch.search ? enter(t.enterOne, () => enterChoose($)) : enter(t.cancelEsc, () => closeChoose($)),
         keyButtons,
       ],
     })
