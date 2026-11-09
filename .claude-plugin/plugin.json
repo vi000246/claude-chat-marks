@@ -1,0 +1,8 @@
+{
+  "name": "chat-marks",
+  "version": "0.2.0",
+  "description": "Highlighter and vim-style marks for the Claude Code transcript: highlight the mouse selection, mark messages, jump between them, and a marks panel; hotkeys set in its own editor",
+  "author": { "name": "vi000246" },
+  "license": "MIT",
+  "types": "./types/index.d.ts"
+}
