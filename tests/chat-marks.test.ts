@@ -72,6 +72,8 @@ function stub(on: any, world: World) {
     return { value: undefined }
   })
   on('ui.focus', () => ({ value: {} }))
+  // the engine's end of a turn, beneath the plugin's hook
+  on('turn.complete', () => ({ text: '' }))
   on('command.register', () => ({ value: undefined }))
   on('clock.now', () => ({ value: 1_000 }))
   on('env.get', ($: any, e: any) => ({ value: e.name === 'HOME' ? '/home/me' : undefined }))
@@ -348,7 +350,7 @@ test('the hotkeys editor: modifier toggles and a letter field, saved into keybin
   // a row picked opens its editor, alt ticked for a row with no key yet
   expect((await keys.find({ key: 'chat-marks-key-row-mark' }))?.props.hotkey).toBe('a')
   // each row says what its key does
-  expect(await keys.find({ type: 'Text', text: /Jump to the next mark or highlight/ })).toBeDefined()
+  expect(await keys.find({ type: 'Text', text: /Jump to the next long reply, mark or highlight/ })).toBeDefined()
   await keys.press({ key: 'chat-marks-key-row-mark' })
   expect(await keys.find({ type: 'Text', text: 'Editing: Mark / unmark' })).toBeDefined()
   expect((await keys.find({ key: 'chat-marks-mod-alt' }))?.props.label).toBe('[x] alt')
@@ -403,6 +405,83 @@ test('the hotkeys editor: modifier toggles and a letter field, saved into keybin
   expect(await keys.find({ key: 'chat-marks-mod-alt' })).toBeUndefined()
   await keys.input({ key: 'chat-marks-key-letter', text: 'n' })
   expect(await keys.find({ type: 'Text', text: 'Panel: cursor down: n' })).toBeDefined()
+})
+
+// a reply `n` lines long: 14 is past the default of 12 rows
+const long = (head: string, n = 14) => [head, ...Array.from({ length: n - 1 }, (_, i) => `第 ${i + 2} 行`)].join('\n')
+const turnEnds = ($: any) => $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: 't1', reason: 'answer' })
+
+test('a turn\'s end marks its long replies with ◇; alt+j stops there; the panel lists none', async ($, on) => {
+  const rows = [
+    { role: 'user', text: '問一', toolUses: [] },
+    { role: 'assistant', text: '先查一下', toolUses: [{}] },
+    { role: 'assistant', text: long('長報告'), toolUses: [] },
+  ]
+  const { toasts, store } = stub(on, { rows })
+  const short = await $.ui.mount(reply('r1', '先查一下', { first: 0, last: 1, of: 2 }))
+  const report = await $.ui.mount(reply('r2', long('長報告'), { first: 0, last: 14, of: 15 }))
+  const hint = await $.ui.mount(HINT)
+
+  await turnEnds($)
+  expect(await report.find({ type: 'Text', text: '◇' })).toBeDefined()
+  expect(await short.find({ type: 'Text', text: '◇' })).toBeUndefined()
+  // kept with the row it is drawn under, so a resumed session can scroll to it
+  const kept = (store.get('s:sess-1') as any).auto
+  expect(kept.map((a: any) => a.id)).toEqual(['r2'])
+  expect(kept[0].snippet).toMatch(/^長報告 第 2 行/)
+
+  // as in 'alt+j goes to scroll': the jump found a stop and went to scroll there
+  await hint.press({ key: 'chat-marks-next' })
+  expect(toasts.at(-1)).toMatch(/ui\.scroll/)
+
+  await hint.press({ key: 'chat-marks-panel' })
+  const panel = await $.ui.mount(pane('chat-marks'))
+  expect(await panel.find({ type: 'Text', text: /No marks yet/ })).toBeDefined()
+
+  // a mark on it: ◆ mark instead of ◇, and the panel lists it
+  await panel.unmount()
+  await hint.press({ key: 'chat-marks-panel' })
+  await markByLetter($, hint, 0)
+  expect(await report.find({ type: 'Text', text: '◇' })).toBeUndefined()
+  expect(await report.find({ type: 'Text', text: '◆ mark' })).toBeDefined()
+})
+
+test('alt+m puts letters on the long replies only while one is on screen', async ($, on) => {
+  const rows = [
+    { role: 'user', text: '短問題', toolUses: [] },
+    { role: 'assistant', text: '好', toolUses: [] },
+    { role: 'assistant', text: long('長回應'), toolUses: [] },
+  ]
+  const { toasts } = stub(on, { rows })
+  const q = await $.ui.mount(prompt('u1', '短問題', { first: 0, last: 0, of: 1 }))
+  const s = await $.ui.mount(reply('r1', '好', { first: 0, last: 1, of: 2 }))
+  const l = await $.ui.mount(reply('r2', long('長回應'), { first: 0, last: 14, of: 15 }))
+  const hint = await $.ui.mount(HINT)
+  await hint.press({ key: 'chat-marks-mark' })
+  const picker = await $.ui.mount(pane('chat-marks-pick'))
+  expect(await picker.findAll({ type: 'Button' })).toHaveLength(1)
+  expect(await l.find({ type: 'Text', text: ' a ' })).toBeDefined()
+  expect(await q.find({ type: 'Text', text: ' a ' })).toBeUndefined()
+  expect(await s.find({ type: 'Text', text: ' a ' })).toBeUndefined()
+  await picker.press({ key: 'chat-marks-pick-0' })
+  expect(toasts.at(-1)).toMatch(/^Marked: 長回應/)
+})
+
+test('/mark auto off takes the ◇ away, a height brings it back', async ($, on) => {
+  const rows = [{ role: 'assistant', text: long('長報告'), toolUses: [] }]
+  stub(on, { rows })
+  const report = await $.ui.mount(reply('r1', long('長報告'), { first: 0, last: 14, of: 15 }))
+  await turnEnds($)
+  expect(await report.find({ type: 'Text', text: '◇' })).toBeDefined()
+
+  expect((await $.command.run({ command: 'mark', args: 'auto off' })).text).toMatch(/No reply is marked by itself/)
+  expect(await report.find({ type: 'Text', text: '◇' })).toBeUndefined()
+  expect((await $.command.run({ command: 'mark', args: 'auto' })).text).toMatch(/auto on/)
+  // taller than this reply: still none
+  expect((await $.command.run({ command: 'mark', args: 'auto 20' })).text).toMatch(/at least 20 rows/)
+  expect(await report.find({ type: 'Text', text: '◇' })).toBeUndefined()
+  await $.command.run({ command: 'mark', args: 'auto 10' })
+  expect(await report.find({ type: 'Text', text: '◇' })).toBeDefined()
 })
 
 test('/mark-clear takes every mark and highlight off', async ($, on) => {

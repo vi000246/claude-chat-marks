@@ -1,7 +1,7 @@
 {
   "name": "chat-marks",
-  "version": "0.2.2",
-  "description": "Highlight and bookmark the parts of a long Claude Code conversation that matter, then jump back to them. Select words in a Claude reply with the mouse and press your highlight key to give them a background colour. Press your mark key and a letter appears on every message on screen: press one to mark that message. Next / previous keys jump through every mark and highlight. The marks panel lists them all with a letter each: j / k preview, Enter jumps, Esc goes back to where you were. Choose your own hotkeys in the panel's Hotkeys tab (/mark keys); /mark lang zh switches the interface to Chinese. Needs the fullscreen renderer (/tui fullscreen). Screenshots and docs: https://github.com/vi000246/claude-chat-marks",
+  "version": "0.3.0",
+  "description": "Highlight and bookmark the parts of a long Claude Code conversation that matter, then jump back to them. Long replies are marked by themselves (a dim ◇), so next / previous walk through the conversation reply by reply, stopping at your own marks and highlights too; one-line progress notes are left out. Select words in a Claude reply with the mouse and press your highlight key to give them a background colour. Press your mark key and a letter appears on each long reply on screen: press one to mark it. The marks panel lists your marks and highlights with a letter each: j / k preview, Enter jumps, Esc goes back to where you were. Choose your own hotkeys in the panel's Hotkeys tab (/mark keys); /mark auto <rows> sets how tall a reply has to be; /mark lang zh switches the interface to Chinese. Needs the fullscreen renderer (/tui fullscreen). Screenshots and docs: https://github.com/vi000246/claude-chat-marks",
   "author": { "name": "vi000246", "url": "https://github.com/vi000246" },
   "homepage": "https://github.com/vi000246/claude-chat-marks",
   "repository": "https://github.com/vi000246/claude-chat-marks",

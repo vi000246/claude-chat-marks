@@ -1,21 +1,25 @@
 // chat-marks: a highlighter and vim-style marks for the Claude Code transcript. See README.md.
 //
-//   alt+m  letters go up on the messages on screen; a letter marks that one, or, on one already
-//          marked (its letter red, "unmark?" beside it), takes the mark off
-//   alt+j  next mark      alt+k  previous mark
+//   alt+m  letters go up on the long replies on screen (on every message when none is long, and on
+//          the ones marked already); a letter marks that one, or, on one already marked (its
+//          letter red, "unmark?" beside it), takes the mark off
+//   alt+j  next stop      alt+k  previous stop: auto marks, marks and highlights alike
 //   alt+y  highlight the mouse selection (Claude's replies); again on it takes it off, as does the
 //          button that shows while the pointer is over a highlighted block
 //   alt+o  the panel (also /mark), two tabs (1, 2):
-//          marks    every mark and highlight in conversation order, a letter each; j / k move the
-//                   cursor and show the conversation there, a letter or Enter jumps and closes,
-//                   Escape closes and goes back to where it was opened; x deletes; 0 twice: all
+//          marks    every mark and highlight in conversation order (no auto mark), a letter each;
+//                   j / k move the cursor and show the conversation there, a letter or Enter jumps
+//                   and closes, Escape closes and goes back to where it was opened; x deletes; 0
+//                   twice: all
 //          hotkeys  click a box, press the keys, saved (/mark keys opens here; the chords above are
 //                   only what this author picked: the mod binds nothing until someone sets them)
-//   /mark next|prev|add|hl [words]|color <#rrggbb>|lang en|zh
-//   /mark-clear  every mark and highlight of this session gone
+//   /mark next|prev|add|hl [words]|auto <rows>|off|on|color <#rrggbb>|lang en|zh
+//   /mark-clear  every mark and highlight of this session gone (auto marks are not the person's)
 //
 // Where alt+j / alt+k and the panel go: a mark is a message's top; a highlight is each highlighted
-// block, brought to the middle of the screen. Nothing is marked but by the person.
+// block, brought to the middle of the screen. An auto mark (◇) is a long reply's top: worked out
+// from the conversation at each turn's end (marks-core autoMarks), never chosen or deleted, so a
+// new height (/mark auto) holds for the whole conversation at once.
 //
 // A mark is a whole transcript row (a prompt, or one block of a reply): $.ui.scroll reveals a row,
 // never a line inside one; a highlighted block, drawn by this mod, is reached by its key. A mod
@@ -29,21 +33,24 @@
 // $.state (the session's, kept through reloads):
 //   marks       [{ id, kind, key, snippet, preview, at }]  by the row's requestId
 //   highlights  { <requestId>: { key, snippet, text, frags: [normalized line] } }
+//   auto        [{ key, id, snippet }]  the auto marks, worked out again at each turn's end; `id` the
+//               row it was last drawn under (null while none was), for a jump before it is redrawn
 //   pick        { items: [{ id, kind, key, snippet }] } while alt+m's letters are up, else null
 //   panel       { tab, mode: 'jump' | 'delete', cursor: <target id>, origin, confirmClear } while
 //               the panel is up; origin: where Escape scrolls back to
 //   keys        { pending: { slot, chord } | null, note, tone } while the panel is up
 //   color, lang the highlight's background; the language spoken (strings.mjs)
 // $.store:
-//   s:<sessionId>  { marks, highlights, at }, so a resumed session gets them back; the newest
+//   s:<sessionId>  { marks, highlights, auto, at }, so a resumed session gets them back; the newest
 //                  KEEP_SESSIONS are kept
-//   cfg            { color, lang, keys: { down, up, remove }, hints }: hints counts the "no hotkeys
-//                  yet" toasts (three at most)
+//   cfg            { color, lang, auto, keys: { down, up, remove }, hints }: auto the rows a reply
+//                  needs to be marked by itself (0: none is); hints counts the "no hotkeys yet"
+//                  toasts (three at most)
 
 import { atom, read, update } from 'claude-code'
 import {
-  LETTERS, anchorOf, hangOf, jumpTarget, keyOf, layout, linesOf, litOf, padCells, plainOf, positions, previewOf,
-  selectionFragments, snippetOf, splitAt, toggleFragments,
+  LETTERS, anchorOf, autoMarks, hangOf, jumpTarget, keyOf, keysMeet, layout, linesOf, litOf, padCells, plainOf,
+  positions, previewOf, rowsOf, selectionFragments, snippetOf, splitAt, toggleFragments,
 } from './marks-core.mjs'
 import { canon, chordFor, globalProblem, isPanelKey, rebind, unbind, usersOf } from './keys-core.mjs'
 import { LANGS, STRINGS } from './strings.mjs'
@@ -68,9 +75,12 @@ const DEFAULT_COLOR = '#6b4f00'
 const UNMARK_COLOR = '#8b1e1e'
 const COLOR = /^#[0-9a-f]{6}$/i
 const ENTRY = 'chat-marks-e-'
+// a reply this many rows tall (or taller) is marked by itself, and gets one of alt+m's letters
+const DEFAULT_AUTO_ROWS = 12
 
 const marksAtom = atom({ plugin: 'chat-marks', key: 'marks' }, [])
 const hlAtom = atom({ plugin: 'chat-marks', key: 'highlights' }, {})
+const autoAtom = atom({ plugin: 'chat-marks', key: 'auto' }, [])
 const pickAtom = atom({ plugin: 'chat-marks', key: 'pick' }, null)
 const panelAtom = atom({ plugin: 'chat-marks', key: 'panel' }, null)
 const colorAtom = atom({ plugin: 'chat-marks', key: 'color' }, DEFAULT_COLOR)
@@ -84,6 +94,8 @@ const seen = new Map()
 let draws = 0
 // the target the last jump went to: where the next one starts while its message is on screen
 let cursor = null
+// the conversation's size in cells, as the last message drawn saw it: how tall a reply is
+let screen = { columns: 100, rows: 40 }
 // the marks panel's own keys (cfg.keys), and the letters left for its entries and alt+m's picker
 let keys = { ...DEFAULT_PANEL_KEYS }
 let letters = LETTERS
@@ -103,7 +115,11 @@ const entryKey = tid => ENTRY + tid
 
 function remember(e, kind) {
   seen.set(e.requestId, { kind, text: e.props.text, onScreen: e.props.onScreen, drawn: ++draws })
+  if (e.viewport?.columns) screen = { columns: e.viewport.columns, rows: e.viewport.rows || screen.rows }
 }
+
+// A reply's text body is the conversation's width less the bullet column.
+const bodyColumns = () => screen.columns - 2
 
 const itemOf = (id, s) => ({ id, kind: s.kind, key: keyOf(s.text), snippet: snippetOf(plainOf(s.text)), preview: previewOf(s.text) })
 
@@ -119,10 +135,16 @@ function visibleNow() {
 }
 
 // Every place alt+j / alt+k and the panel go, unordered: a mark is its message's top; a highlight
-// is each highlighted block, or the message when its text is not at hand.
+// is each highlighted block, or the message when its text is not at hand; an auto mark (`auto`,
+// alt+j / alt+k's alone) its reply's top, when no mark is there already and a row of it is known.
 // [{ tid, id, block, kind, key, snippet, preview, lit, frags, how }]
-function targetsOf(marks, highlights) {
+function targetsOf(marks, highlights, auto = []) {
   const out = []
+  for (const a of auto) {
+    const id = drawnId(a.key) ?? a.id
+    if (!id || marks.some(m => m.kind === 'assistant' && (m.id === id || keysMeet(m.key, a.key)))) continue
+    out.push({ tid: 'auto:' + id, id, block: null, kind: 'assistant', key: a.key, snippet: a.snippet, preview: [a.snippet], how: 'auto' })
+  }
   for (const m of marks) {
     const text = seen.get(m.id)?.text
     const preview = text ? previewOf(text) : m.preview?.length ? m.preview : [m.snippet]
@@ -140,8 +162,10 @@ function targetsOf(marks, highlights) {
 }
 
 // The targets in conversation order (a block just after its message's top); `extra` are placed too.
-async function placedTargets($, extra = []) {
-  const items = targetsOf(await read($, marksAtom), await read($, hlAtom))
+// `withAuto`: the auto marks among them (alt+j / alt+k), worked out afresh; the panel lists none.
+async function placedTargets($, extra = [], withAuto = false) {
+  const auto = withAuto ? await refreshAuto($) : []
+  const items = targetsOf(await read($, marksAtom), await read($, hlAtom), auto)
   const msgs = [...new Map(items.map(t => [t.id, { id: t.id, kind: t.kind, key: t.key }])).values()]
   const pos = positions(await $.session.messages(), [...msgs, ...extra])
   const placed = items
@@ -171,10 +195,11 @@ async function persist($) {
   const key = 's:' + (await $.session.id())
   const marks = await read($, marksAtom)
   const highlights = await read($, hlAtom)
+  const auto = await read($, autoAtom)
   // delete first so a rewrite moves the key to the end of the insertion order the pruning reads
   await $.store.delete(key)
-  if (marks.length || Object.keys(highlights).length) {
-    await $.store.set(key, { marks, highlights, at: await $.clock.now() })
+  if (marks.length || Object.keys(highlights).length || auto.length) {
+    await $.store.set(key, { marks, highlights, auto, at: await $.clock.now() })
   }
   const kept = (await $.store.keys()).filter(k => k.startsWith('s:'))
   for (const k of kept.slice(0, Math.max(0, kept.length - KEEP_SESSIONS))) await $.store.delete(k)
@@ -185,11 +210,13 @@ async function restore($) {
   if (COLOR.test(color ?? '')) await update($, colorAtom, () => color)
   if (LANGS.includes(lang)) await update($, langAtom, () => lang)
   usePanelKeys(panelKeys)
-  if ((await read($, marksAtom)).length || Object.keys(await read($, hlAtom)).length) return
+  const held = (await read($, marksAtom)).length || Object.keys(await read($, hlAtom)).length || (await read($, autoAtom)).length
+  if (held) return
   const saved = await $.store.get('s:' + (await $.session.id()))
   if (!saved || typeof saved !== 'object') return
   if (Array.isArray(saved.marks)) await update($, marksAtom, () => saved.marks)
   if (saved.highlights && typeof saved.highlights === 'object') await update($, hlAtom, () => saved.highlights)
+  if (Array.isArray(saved.auto)) await update($, autoAtom, () => saved.auto)
 }
 
 async function clearAll($) {
@@ -197,6 +224,51 @@ async function clearAll($) {
   await update($, marksAtom, () => [])
   await update($, hlAtom, () => ({}))
   cursor = null
+}
+
+// ---- auto marks -------------------------------------------------------------------
+
+// How tall a reply is marked by itself (cfg.auto); 0: none is.
+async function autoRows($) {
+  const n = (await config($)).auto
+  return Number.isInteger(n) && n >= 0 ? n : DEFAULT_AUTO_ROWS
+}
+
+// The row a reply is drawn under now, of those drawn since the module loaded, by its text.
+function drawnId(key) {
+  let best = null
+  for (const [id, s] of seen) {
+    if (s.kind === 'assistant' && keysMeet(keyOf(s.text), key) && (!best || s.drawn > best.drawn)) best = { id, drawn: s.drawn }
+  }
+  return best?.id ?? null
+}
+
+// The auto marks worked out again from the conversation. Only the rows they were drawn under carry
+// over from the last time, so a jump reaches one not drawn since a reload or a resume.
+async function refreshAuto($) {
+  const minRows = await autoRows($)
+  const rows = minRows ? await $.session.messages() : []
+  const gap = Math.max(8, Math.floor(screen.rows / 2))
+  const before = await read($, autoAtom)
+  const next = (minRows ? autoMarks(rows, { columns: bodyColumns(), minRows, gap }) : []).map(({ index, key }) => ({
+    key,
+    id: drawnId(key) ?? before.find(a => a.key === key)?.id ?? null,
+    snippet: snippetOf(plainOf(rows[index].text)),
+  }))
+  if (JSON.stringify(next) === JSON.stringify(before)) return next
+  await update($, autoAtom, () => next)
+  await persist($)
+  return next
+}
+
+// /mark auto <rows> | on | off, for every session; no argument says how it is now.
+async function setAuto($, arg) {
+  const t = await strings($)
+  const n = arg === 'off' ? 0 : arg === 'on' ? DEFAULT_AUTO_ROWS : Number(arg)
+  if (!arg || !Number.isInteger(n) || n < 0) return t.autoNow(await autoRows($))
+  await $.store.set('cfg', { ...(await config($)), auto: n })
+  await refreshAuto($)
+  return n ? t.autoSet(n) : t.autoOff
 }
 
 // ---- marks --------------------------------------------------------------------
@@ -230,7 +302,8 @@ async function unmark($, id) {
   if (m) await toggleMarkOn($, m)
 }
 
-// alt+m: a letter over each message on screen, always; nothing is marked until one is pressed.
+// alt+m: a letter over each long reply on screen and each message marked already, or over every
+// message when no long reply shows; nothing is marked until one is pressed.
 async function markKey($) {
   if (await read($, pickAtom)) return closePick($)
   const t = await strings($)
@@ -238,7 +311,12 @@ async function markKey($) {
   const pos = positions(await $.session.messages(), visible)
   const shown = visible.filter(v => pos.has(v.id)).sort((a, b) => pos.get(a.id) - pos.get(b.id))
   if (!shown.length) return toast($, t.noScreen)
-  const items = shown.slice(0, letters.length).map(({ id, kind, key, snippet, preview }) => ({ id, kind, key, snippet, preview }))
+  const minRows = (await autoRows($)) || DEFAULT_AUTO_ROWS
+  const marks = await read($, marksAtom)
+  const isLong = v => v.kind === 'assistant' && (seen.get(v.id)?.onScreen?.of ?? rowsOf(seen.get(v.id)?.text, bodyColumns())) >= minRows
+  const isMarked = v => marks.some(m => m.id === v.id || (m.kind === v.kind && m.key === v.key))
+  const offered = shown.some(isLong) ? shown.filter(v => isLong(v) || isMarked(v)) : shown
+  const items = offered.slice(0, letters.length).map(({ id, kind, key, snippet, preview }) => ({ id, kind, key, snippet, preview }))
   await update($, pickAtom, () => ({ items }))
   await $.ui.open({ id: PICK_PANE, title: t.pickTitle, focus: true, closeOnEscape: true, rows: items.length + 2 })
 }
@@ -338,21 +416,23 @@ async function reveal($, p) {
   return again?.deny ? row : again
 }
 
-const what = p => (p.how === 'mark' ? p.snippet : snippetOf(p.lit, 40))
+const what = p => (p.how === 'highlight' ? snippetOf(p.lit, 40) : p.snippet)
+const wordOf = (t, p) => ({ mark: t.markWord, highlight: t.highlightWord, auto: t.autoWord })[p.how]
 
 async function goTo($, p, n, total, wrap = '') {
   const t = await strings($)
   const moved = await reveal($, p)
   if (moved?.deny) return toast($, t.cantScroll(moved.deny))
   cursor = p.tid
-  toast($, t.jumped(p.how === 'mark' ? t.markWord : t.highlightWord, n, total, wrap, what(p)))
+  toast($, t.jumped(wordOf(t, p), n, total, wrap, what(p)))
 }
 
+// alt+j / alt+k: the next or previous of every mark, highlight and auto mark.
 async function jump($, dir) {
   await closePick($)
   const t = await strings($)
   const visible = visibleNow()
-  const { placed, pos } = await placedTargets($, visible)
+  const { placed, pos } = await placedTargets($, visible, true)
   if (!placed.length) {
     const any = (await read($, marksAtom)).length || Object.keys(await read($, hlAtom)).length
     return toast($, any ? t.gone : t.noMarks)
@@ -599,7 +679,7 @@ async function registerCommands($) {
   await $.command.register({
     name: 'mark',
     description: t.markDescription,
-    argumentHint: '[keys|next|prev|add|hl|color <#rrggbb>|lang en|zh]',
+    argumentHint: '[keys|next|prev|add|hl|auto <rows>|off|color <#rrggbb>|lang en|zh]',
     immediate: true,
   })
   await $.command.register({ name: 'mark-clear', description: t.clearDescription, immediate: true })
@@ -609,14 +689,16 @@ async function registerCommands($) {
 
 // The row above a message. While alt+m's letters are up: its letter, amber, or red with "unmark?"
 // beside it when the message is marked already. Otherwise `◆ mark` on a marked one, which a click
-// takes off (the pointer over it says so). Null for neither.
-function headLine($, e, t, color, label, isMarked) {
-  if (!label && !isMarked) return null
+// takes off (the pointer over it says so), or a dim `◇` on an auto mark. Null for none.
+function headLine($, e, t, color, label, isMarked, isAuto) {
+  if (!label && !isMarked && !isAuto) return null
   const { Box, Button, Text } = $.ui.resolve(e)
   const parts = []
   if (label) {
     parts.push(Text({ backgroundColor: isMarked ? UNMARK_COLOR : color, color: 'white', weight: 'bold', children: [` ${label} `] }))
     if (isMarked) parts.push(Text({ color: 'error', children: [' ' + t.unmarkPrefix.trim()] }))
+  } else if (!isMarked) {
+    parts.push(Text({ dimColor: true, children: ['◇'] }))
   } else {
     parts.push(Button({
       key: `chat-marks-unmark-${e.requestId}`,
@@ -710,8 +792,11 @@ async function headFor($, e, t, kind) {
   const marks = await read($, marksAtom)
   const pick = await read($, pickAtom)
   const color = await read($, colorAtom)
+  const auto = await read($, autoAtom)
   const n = pick ? pick.items.findIndex(isRow(e, kind)) : -1
-  return headLine($, e, t, color, n >= 0 ? letters[n] : null, marks.some(isRow(e, kind)))
+  const key = keyOf(e.props.text)
+  const isAuto = kind === 'assistant' && auto.some(a => a.id === e.requestId || keysMeet(a.key, key))
+  return headLine($, e, t, color, n >= 0 ? letters[n] : null, marks.some(isRow(e, kind)), isAuto)
 }
 
 function withHead($, e, head, theirs) {
@@ -881,15 +966,24 @@ export function register(on) {
     await restore($)
     await registerCommands($)
     await hintSetup($)
+    await refreshAuto($)
     return next(e)
   })
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
       await clearAll($)
+      await update($, autoAtom, () => [])
       seen.clear()
     }
     return next(e)
+  })
+
+  // A turn of the conversation's own (not an agent's) ended: its long replies become auto marks.
+  on('turn.complete', async ($, e, next) => {
+    const done = await next(e)
+    if (!e.agentId) await refreshAuto($)
+    return done
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -939,6 +1033,7 @@ export function register(on) {
     else if (arg === 'add' || arg === 'm') await markKey($)
     else if ((arg === 'hl' || arg === 'y') && rest.length) await highlightWords($, rest.join(' '))
     else if (arg === 'hl' || arg === 'y') await highlight($)
+    else if (arg === 'auto') return { text: await setAuto($, value) }
     else if (arg === 'color') return { text: await setColor($, value) }
     else if (arg === 'lang') return { text: await setLang($, value) }
     else if (arg === 'clear') {

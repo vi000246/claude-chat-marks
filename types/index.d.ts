@@ -8,12 +8,14 @@ export type ChatMark = {
 }
 export type ChatHighlight = { key: string; snippet: string; text?: string; frags: string[] }
 export type ChatPickItem = { id: string; kind: 'user' | 'assistant'; key: string; snippet: string; preview?: string[] }
+export type ChatAutoMark = { key: string; id: string | null; snippet: string }
 
 declare module 'claude-code' {
   interface PluginState {
     'chat-marks': {
       marks: ChatMark[]
       highlights: Record<string, ChatHighlight>
+      auto: ChatAutoMark[]
       pick: { items: ChatPickItem[] } | null
       panel: {
         tab: 'marks' | 'keys'

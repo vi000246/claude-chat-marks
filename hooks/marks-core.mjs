@@ -2,6 +2,7 @@
 //   - where a highlight lands in a reply, and how to split the reply so those blocks are drawn
 //     with a yellow background while the rest stays the engine's own Markdown
 //   - where messages sit in the conversation, and which mark alt+j / alt+k goes to
+//   - which replies are long enough to be marked by themselves
 
 // Table borders count as space, so a selected table row (drawn with │) still matches the source.
 const SPACE = /[\s│┃|]/
@@ -35,6 +36,10 @@ export const norm = s => normMap(s).out
 
 // What finds a message again in $.session.messages(): the head of its text.
 export const keyOf = text => norm(text || '').slice(0, 160)
+
+// Two keys of one message: equal, or one the head of the other, as when a stored message joins two
+// blocks of text the transcript draws apart.
+export const keysMeet = (a, b) => a === b || (Math.min(a.length, b.length) >= 40 && (a.startsWith(b) || b.startsWith(a)))
 
 // Terminal cells a string takes (CJK and fullwidth forms two), and the string padded to `n` of them.
 const WIDE = /[ᄀ-ᅟ⺀-〾ぁ-㏿㐀-䶿一-鿿가-힣豈-﫿︰-﹏＀-｠￠-￦]/
@@ -325,4 +330,32 @@ export function jumpTarget(targets, dir, from) {
   if (t) return { target: t, index: index(t), wrapped: false }
   t = dir > 0 ? sorted[0] : sorted[sorted.length - 1]
   return { target: t, index: index(t), wrapped: true }
+}
+
+// ---- long replies -----------------------------------------------------------------
+
+// The terminal rows a message's text takes `columns` cells across, the blank row above it counted:
+// each source line wraps on its own. An estimate (Markdown's markers and borders are not taken
+// out), near enough to tell a long reply from a line of progress.
+export function rowsOf(text, columns) {
+  const width = Math.max(20, columns)
+  return 1 + (text || '').trimEnd().split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(cellsOf(line) / width)), 0)
+}
+
+// The replies marked by themselves: a block of Claude's text at least `minRows` rows tall, its top
+// at least `gap` rows under the top of the last one taken (a nearer one is on the screen a jump to
+// that one lands on). rows: $.session.messages(), a tool call counted as a row. [{ index, key }]
+export function autoMarks(rows, { columns, minRows, gap }) {
+  const out = []
+  let y = 0
+  let last = -Infinity
+  rows.forEach((r, index) => {
+    const tall = r.text ? rowsOf(r.text, columns) : 0
+    if (r.role === 'assistant' && tall >= minRows && y - last >= gap) {
+      out.push({ index, key: keyOf(r.text) })
+      last = y
+    }
+    y += tall + (r.toolUses?.length ?? 0)
+  })
+  return out
 }

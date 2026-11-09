@@ -3,8 +3,8 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
-  anchorOf, hangOf, jumpTarget, layout, linesOf, litOf, normMap, padCells, plainOf, positions, previewOf,
-  selectionFragments, splitAt, toggleFragments,
+  anchorOf, autoMarks, hangOf, jumpTarget, keysMeet, layout, linesOf, litOf, normMap, padCells, plainOf, positions,
+  previewOf, rowsOf, selectionFragments, splitAt, toggleFragments,
 } from '../hooks/marks-core.mjs'
 
 const lit = parts => parts.filter(p => p.type === 'runs').flatMap(p => p.runs.filter(r => r.hl).map(r => r.text))
@@ -133,4 +133,42 @@ test('a snippet\'s text has no markdown markers', () => {
 
 test('a preview is the first lines a reader sees, markers gone', () => {
   assert.deepEqual(previewOf('# 標題\n\n```js\ncode\n```\n**粗體** 文字\n- 清單\n第四行'), ['標題', 'code', '粗體 文字'])
+})
+
+test('rows: each line wraps on its own, a CJK character two cells, a blank row above', () => {
+  assert.equal(rowsOf('short', 40), 2)
+  assert.equal(rowsOf('a'.repeat(41) + '\n\nb', 40), 1 + 2 + 1 + 1)
+  assert.equal(rowsOf('中'.repeat(21), 40), 1 + 2)
+  assert.equal(rowsOf('one\n\n\n', 40), 2)
+})
+
+const lines = (head, n) => [head, ...Array.from({ length: n - 1 }, (_, i) => `line ${i + 2}`)].join('\n')
+
+test('auto marks: long replies only, a near one left out, tool calls counted', () => {
+  const rows = [
+    { role: 'user', text: 'question one', toolUses: [] },
+    { role: 'assistant', text: 'checking the API first', toolUses: [{}, {}] },
+    { role: 'user', text: '', toolUses: [] },
+    { role: 'assistant', text: lines('first report', 14), toolUses: [] },
+    { role: 'user', text: 'question two', toolUses: [] },
+    // its top is 15 + 2 rows under the first report's: on the screen a jump there shows
+    { role: 'assistant', text: lines('near report', 12), toolUses: [] },
+    { role: 'user', text: 'question three', toolUses: [] },
+    { role: 'assistant', text: 'working', toolUses: Array.from({ length: 20 }, () => ({})) },
+    { role: 'assistant', text: lines('far report', 30), toolUses: [] },
+    { role: 'user', text: lines('a long prompt of mine', 30), toolUses: [] },
+  ]
+  const got = autoMarks(rows, { columns: 80, minRows: 12, gap: 20 })
+  assert.deepEqual(got.map(a => a.index), [3, 8])
+  assert.match(got[0].key, /^first report/)
+  // a lower bar takes more; with no gap the near one too
+  assert.deepEqual(autoMarks(rows, { columns: 80, minRows: 12, gap: 0 }).map(a => a.index), [3, 5, 8])
+  assert.deepEqual(autoMarks(rows, { columns: 80, minRows: 20, gap: 20 }).map(a => a.index), [8])
+})
+
+test('keys meet when equal, or one long enough is the head of the other', () => {
+  const head = 'x'.repeat(40)
+  assert.ok(keysMeet(head, head + ' more'))
+  assert.ok(!keysMeet('short', 'short and more'))
+  assert.ok(keysMeet('short', 'short'))
 })

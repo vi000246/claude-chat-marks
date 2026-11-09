@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "chat-marks",
-      "description": "Highlighter and vim-style marks for the Claude Code transcript: highlight the mouse selection, mark messages, jump between them, a marks panel; hotkeys set in its own editor",
+      "description": "Highlighter and vim-style marks for the Claude Code transcript: long replies marked by themselves, highlight the mouse selection, mark messages, jump between them, a marks panel; hotkeys set in its own editor",
       "author": { "name": "vi000246" },
       "source": "./"
     }

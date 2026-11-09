@@ -8,10 +8,11 @@ Long Claude Code sessions scroll away fast: the one paragraph you needed is fort
 
 ## What it does
 
+- **Auto marks.** When a turn ends, each of Claude's replies at least 12 rows tall gets a dim `◇`: the ones written for you to read, not the one-line progress notes between tool calls. A long reply whose top is less than half a screen under the last one is left out, since a jump to that one shows it already. They are worked out from the conversation each time, so there is nothing to delete: `/mark auto 20` asks for taller replies across the whole conversation at once, `/mark auto off` turns them off.
 - **Highlight.** Select words in one of Claude's replies with the mouse and press your highlight key: they get a background colour. Or type them: `/mark hl <words>` highlights them in the latest reply holding them. Point at a highlighted block and a *Remove highlight* button shows above it; selecting it again and pressing the key removes it too.
-- **Mark.** Press your mark key and a letter appears over every message on screen. Press one to mark that message (`◆ mark`). A message already marked gets a red letter and *unmark?*: its letter takes the mark off. A click on `◆ mark` does as well.
-- **Jump.** Next and previous go through every mark and every highlighted block in conversation order. A mark lands at the top of its message, a highlight in the middle of the screen.
-- **Marks panel**, first tab. Every mark and highlight in one list, a letter each: press the letter to jump there. `j` / `k` move the cursor and show the conversation at that entry as you go; Enter or the letter jumps for good, Escape takes you back to where you opened the panel. `x` then a letter deletes one, `0` twice deletes them all; the mouse wheel and PageUp / PageDown scroll.
+- **Mark.** Press your mark key and a letter appears over each long reply on screen (over every message when none of them is long). Press one to mark that message (`◆ mark`). A message already marked gets a red letter and *unmark?*: its letter takes the mark off. A click on `◆ mark` does as well. Marking an auto mark keeps it in the marks panel.
+- **Jump.** Next and previous go through every auto mark, mark and highlighted block in conversation order. A mark lands at the top of its message, a highlight in the middle of the screen.
+- **Marks panel**, first tab. The marks and highlights you made (not the auto marks) in one list, a letter each: press the letter to jump there. `j` / `k` move the cursor and show the conversation at that entry as you go; Enter or the letter jumps for good, Escape takes you back to where you opened the panel. `x` then a letter deletes one, `0` twice deletes them all; the mouse wheel and PageUp / PageDown scroll.
 - **Hotkeys**, second tab (`/mark keys` opens it directly): click a row (or press its letter) and an editor opens above the list: `ctrl` / `alt` / `shift` toggles and a one-letter field. Type the letter, Enter or *Save*, done. A combination Claude Code already uses is named first and taken over only on a second *Save*. Everything works from the keyboard too (Tab, Enter, typing).
 - Marks and highlights come back with `claude --resume`. The interface speaks English or Chinese (`/mark lang zh`).
 
@@ -59,9 +60,10 @@ Pick whatever suits you. The author uses `alt+m` mark, `alt+j` / `alt+k` next / 
 | `/mark add` | Put the letters up, as the mark key does |
 | `/mark hl` | Highlight the mouse selection, as the highlight key does |
 | `/mark hl <words>` | Highlight those words in the latest reply holding them |
+| `/mark auto <rows>`, `/mark auto off`, `/mark auto on` | How tall a reply is to be marked by itself (default 12 rows), for every session; `off` marks none |
 | `/mark color #rrggbb` | The highlight background (default `#6b4f00`, a dark amber for dark terminals); `reset` for the default |
 | `/mark lang en`, `/mark lang zh` | The interface language, for every session |
-| `/mark-clear` | Remove every mark and highlight of this session |
+| `/mark-clear` | Remove every mark and highlight of this session (auto marks stay; `/mark auto off` turns them off) |
 
 ## How the hotkeys work
 
@@ -74,6 +76,7 @@ The keys inside the marks panel (`j`, `k`, `x` by default) are set in the same p
 
 ## Limits
 
+- **A reply's height is reckoned from its text** at the terminal's width, so after a resize an auto mark or two may move. A reply not drawn since the plugin loaded or the session was resumed may not be reachable until you scroll past it.
 - **A mark is a whole message, not a line.** Claude Code can scroll a message into view but not to a line inside it, so a jump to a mark lands at the top of that message. A highlighted block is drawn by the plugin and can be centred.
 - Your own messages can be marked but not highlighted: the plugin cannot repaint part of the row Claude Code draws for them.
 - A highlighted block is redrawn as plain text, keeping bold, italics and inline code colours. A highlight inside a table or a code block shows that block as its source text.
