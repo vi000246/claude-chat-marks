@@ -106,6 +106,13 @@ test('a block\'s lit words, separate stretches joined by an ellipsis', () => {
   assert.equal(litOf(runs), '甲乙 … 丁 戊')
 })
 
+test('inline code inside bold loses its backticks and keeps both styles', () => {
+  const parts = layout('**Use `public` here.** And more', ['And more'])
+  const runs = parts[0].runs
+  assert.equal(runs.map(r => r.text).join(''), 'Use public here. And more')
+  assert.deepEqual(runs.find(r => r.text === 'public'), { text: 'public', code: true, bold: true, hl: false })
+})
+
 test('a block\'s runs line by line; a list item hangs under its marker', () => {
   const lines = linesOf([{ text: '1. 甲' }, { text: '乙\n   丙', hl: true }])
   assert.deepEqual(lines, [[{ text: '1. 甲' }, { text: '乙', hl: true }], [{ text: '   丙', hl: true }]])

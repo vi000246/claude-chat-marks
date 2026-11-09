@@ -107,10 +107,11 @@ export function inlineSegments(line) {
   let at = 0
   for (const m of line.matchAll(INLINE)) {
     if (m.index > at) segs.push({ text: line.slice(at, m.index) })
-    if (m[1] !== undefined || m[2] !== undefined) segs.push({ text: m[1] ?? m[2], bold: true })
+    // bold and italics hold markdown of their own (`**use `x` here**`): read it, keep the style
+    if (m[1] !== undefined || m[2] !== undefined) segs.push(...inlineSegments(m[1] ?? m[2]).map(s => ({ ...s, bold: true })))
     else if (m[3] !== undefined) segs.push({ text: m[3], code: true })
     else if (m[4] !== undefined) segs.push({ text: m[4], link: true })
-    else segs.push({ text: m[5], italic: true })
+    else segs.push(...inlineSegments(m[5]).map(s => ({ ...s, italic: true })))
     at = m.index + m[0].length
   }
   if (at < line.length) segs.push({ text: line.slice(at) })

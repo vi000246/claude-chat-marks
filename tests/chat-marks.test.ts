@@ -196,9 +196,22 @@ test('one message drawn under two ids gets one letter', async ($, on) => {
   expect(opened).toEqual(['chat-marks-pick'])
   const picker = await $.ui.mount(pane('chat-marks-pick'))
   expect(await picker.findAll({ type: 'Button' })).toHaveLength(1)
-  // the letter is on whichever of the two was drawn last: one of them, never both
-  const badges = [await before.find({ type: 'Text', text: ' a ' }), await now.find({ type: 'Text', text: ' a ' })]
-  expect(badges.filter(Boolean)).toHaveLength(1)
+  // the letter goes on the row by its text, so whichever id is the one on screen carries it
+  expect(await now.find({ type: 'Text', text: ' a ' })).toBeDefined()
+  expect(await before.find({ type: 'Text', text: ' a ' })).toBeDefined()
+})
+
+test('a mark recorded under one id shows on the row drawn under another', async ($, on) => {
+  const { toasts } = stub(on, { rows: [{ role: 'user', text: '同一則提問', toolUses: [] }] })
+  const stale = await $.ui.mount(prompt('stale-id', '同一則提問', { first: 0, last: 0, of: 1 }))
+  const hint = await $.ui.mount(HINT)
+  await markByLetter($, hint, 0)
+  await stale.unmount()
+  const live = await $.ui.mount(prompt('live-id', '同一則提問', { first: 0, last: 0, of: 1 }))
+  expect(await live.find({ type: 'Text', text: '◆ mark' })).toBeDefined()
+  // and its click takes it off
+  await live.press({ key: 'chat-marks-unmark-live-id' })
+  expect(toasts.at(-1)).toBe('Unmarked: 同一則提問')
 })
 
 test('a click on ◆ mark takes the mark off', async ($, on) => {

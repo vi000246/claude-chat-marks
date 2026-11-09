@@ -222,9 +222,11 @@ async function toggleMarkOn($, item) {
   toast($, added ? t.marked(item.snippet) : t.unmarked(item.snippet))
 }
 
-// A click on a message's `◆ mark`: that mark off.
+// A click on a message's `◆ mark`: that mark off, whichever id it was recorded under.
 async function unmark($, id) {
-  const m = (await read($, marksAtom)).find(x => x.id === id)
+  const s = seen.get(id)
+  const key = s && keyOf(s.text)
+  const m = (await read($, marksAtom)).find(x => x.id === id || (s && x.kind === s.kind && x.key === key))
   if (m) await toggleMarkOn($, m)
 }
 
@@ -305,10 +307,28 @@ async function unhighlight($, id, frags) {
 
 // ---- jumping --------------------------------------------------------------------
 
-// A mark's message comes to the top; a highlighted block to the middle, by its key, after its
-// message was brought into the drawn rows when the key alone does not reach it.
+// The ids a message may be on screen under: the one recorded, then every other drawn with its
+// text, the latest first.
+function idsOf(p) {
+  const others = [...seen]
+    .filter(([id, s]) => id !== p.id && s.kind === p.kind && keyOf(s.text) === p.key)
+    .sort(([, a], [, b]) => b.drawn - a.drawn)
+    .map(([id]) => id)
+  return [p.id, ...others]
+}
+
+// A mark's message comes to the top (under another id of it if the recorded one is gone); a
+// highlighted block to the middle, by its key, after its message was brought into the drawn rows
+// when the key alone does not reach it.
 async function reveal($, p) {
-  if (p.block == null) return $.ui.scroll({ to: { requestId: p.id }, block: 'start' })
+  if (p.block == null) {
+    let moved
+    for (const id of idsOf(p)) {
+      moved = await $.ui.scroll({ to: { requestId: id }, block: 'start' })
+      if (!moved?.deny) return moved
+    }
+    return moved
+  }
   const key = blockKey(p.id, p.block)
   const direct = await $.ui.scroll({ to: { key }, block: 'center' })
   if (!direct?.deny) return direct
@@ -506,6 +526,7 @@ async function armSlot($, slot) {
   const mods = PANEL_SLOTS.includes(slot) ? {} : chord ? Object.fromEntries(MODS.map(m => [m, parts.includes(m)])) : { alt: true }
   await update($, keysAtom, k => ({ ...(k ?? {}), armed: slot, mods, letter, pending: null, note: null, tone: null }))
   await $.ui.focus({ requestId: PANEL, key: LETTER }).catch(() => undefined)
+  await $.ui.scroll({ in: PANEL, to: 'start' }).catch(() => undefined)
 }
 
 const disarm = ($, text, tone) => update($, keysAtom, k => ({ ...(k ?? {}), armed: null, pending: null, note: text, tone }))
@@ -678,12 +699,19 @@ function drawReply($, e, t, parts, head, color) {
   })
 }
 
-async function headFor($, e, t) {
+// Whether a mark or a picked item is this row: by its id, or by its text, since one message can be
+// drawn under two ids and the one recorded may not be the one on screen.
+const isRow = (e, kind) => {
+  const key = keyOf(e.props.text)
+  return it => it.id === e.requestId || (it.kind === kind && it.key === key)
+}
+
+async function headFor($, e, t, kind) {
   const marks = await read($, marksAtom)
   const pick = await read($, pickAtom)
   const color = await read($, colorAtom)
-  const n = pick ? pick.items.findIndex(it => it.id === e.requestId) : -1
-  return headLine($, e, t, color, n >= 0 ? letters[n] : null, marks.some(m => m.id === e.requestId))
+  const n = pick ? pick.items.findIndex(isRow(e, kind)) : -1
+  return headLine($, e, t, color, n >= 0 ? letters[n] : null, marks.some(isRow(e, kind)))
 }
 
 function withHead($, e, head, theirs) {
@@ -835,12 +863,14 @@ async function drawKeysTab($, e, t) {
       })
     : null
   const tone = { ok: 'success', warn: 'warning', error: 'error' }[state?.tone]
+  // the editor and the last note go above the list, where the panel opens: a short pane shows
+  // them with the tabs, not scrolled out of sight under the rows
   return [
     Text({ dimColor: true, children: [t.keysHint] }),
-    Box({ flexDirection: 'column', gap: 1, children: GLOBAL_SLOTS.map(s => row(s, slots.indexOf(s))) }),
-    Box({ flexDirection: 'column', gap: 1, children: PANEL_SLOTS.map(s => row(s, slots.indexOf(s))) }),
     ...(editor ? [editor] : []),
     ...(state?.note ? [Text({ ...(tone ? { color: tone } : {}), children: [state.note] })] : []),
+    Box({ flexDirection: 'column', gap: 1, children: GLOBAL_SLOTS.map(s => row(s, slots.indexOf(s))) }),
+    Box({ flexDirection: 'column', gap: 1, children: PANEL_SLOTS.map(s => row(s, slots.indexOf(s))) }),
   ]
 }
 
@@ -921,13 +951,13 @@ export function register(on) {
 
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     remember(e, 'user')
-    return withHead($, e, await headFor($, e, await strings($)), await next(e))
+    return withHead($, e, await headFor($, e, await strings($), 'user'), await next(e))
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     remember(e, 'assistant')
     const t = await strings($)
-    const head = await headFor($, e, t)
+    const head = await headFor($, e, t, 'assistant')
     const frags = (await read($, hlAtom))[e.requestId]?.frags
     const parts = frags && !e.props.isSummary ? layout(e.props.text, frags) : null
     if (parts) return drawReply($, e, t, parts, head, await read($, colorAtom))
