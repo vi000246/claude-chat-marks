@@ -543,24 +543,24 @@ test('alt+y by keys: two letters land on the one place they match; an end\'s hin
   await hint.press({ key: 'chat-marks-hl' })
   expect(opened).toEqual(['chat-marks-choose'])
   const chooser = await $.ui.mount(pane('chat-marks-choose'))
-  expect(await chooser.find({ type: 'Text', text: /^Start: type its first two letters/ })).toBeDefined()
+  expect(await chooser.find({ type: 'Text', text: "Type the start's two letters" })).toBeDefined()
 
   // (a digit: no Boshiamy code has one, and the text has not these two)
   await type(chooser, 'x')
   expect(await chooser.find({ type: 'Text', text: '> x' })).toBeDefined()
   await type(chooser, '9')
-  expect(await chooser.find({ type: 'Text', text: /Nothing on screen matches "x9"/ })).toBeDefined()
+  expect(await chooser.find({ type: 'Text', text: 'No "x9" on screen' })).toBeDefined()
 
   // `ht` is only in the URL: the start is taken at once, and the end hints follow each place it may end
   await type(chooser, 'ht')
-  expect(await chooser.find({ type: 'Text', text: /^From "https:\/\/x\.de/ })).toBeDefined()
+  expect(await chooser.find({ type: 'Text', text: "Type the end's hint (s: by letters)" })).toBeDefined()
   expect(await selectedIn(msg)).toBe('h')
   // never s: it starts looking for the end by letters
   expect((await hintsIn(msg)).slice(0, 3)).toEqual(['a', 'd', 'f'])
 
   await type(chooser, 'a')
   expect(world.copies).toEqual(['https://x.dev/a/b'])
-  expect(await chooser.find({ type: 'Text', text: 'Copied 17 characters. Highlight it?' })).toBeDefined()
+  expect(await chooser.find({ type: 'Text', text: 'Copied 17. Highlight?' })).toBeDefined()
   expect(await selectedIn(msg)).toBe('https://x.dev/a/b')
   expect(await hintsIn(msg)).toEqual([])
 
@@ -580,7 +580,7 @@ test('alt+y by keys: a Chinese start by its Boshiamy code, picked among two by i
   const chooser = await $.ui.mount(pane('chat-marks-choose'))
 
   await type(chooser, 'gq')
-  expect(await chooser.find({ type: 'Text', text: '2 places: type the hint of the start' })).toBeDefined()
+  expect(await chooser.find({ type: 'Text', text: '2 places: type a hint' })).toBeDefined()
   expect(await hintsIn(msg)).toEqual(['a', 's'])
   await type(chooser, 's')
   expect(await selectedIn(msg)).toBe('重')
@@ -605,7 +605,7 @@ test('alt+y by keys: / looks for the end by the two letters it ends on', async (
   const chooser = await $.ui.mount(pane('chat-marks-choose'))
   await type(chooser, 'be')
   await type(chooser, 's')
-  expect(await chooser.find({ type: 'Text', text: /type the end's last two letters/ })).toBeDefined()
+  expect(await chooser.find({ type: 'Text', text: "Type the end's last two letters" })).toBeDefined()
   await type(chooser, 'ma')
   expect(world.copies).toEqual(['beta gamma'])
 })
@@ -618,12 +618,12 @@ test('alt+y by keys without the keyboard (text in the prompt): the pane says whi
   await hint.press({ key: 'chat-marks-hl' })
   const unfocused = { ...pane('chat-marks-choose'), props: { ...pane('chat-marks-choose').props, isFocused: false } }
   const chooser = await $.ui.mount(unfocused as any)
-  expect(await chooser.find({ type: 'Text', text: /press ctrl\+x tab to move here/ })).toBeDefined()
+  expect(await chooser.find({ type: 'Text', text: 'Press ctrl+x tab to type here' })).toBeDefined()
   await chooser.unmount()
   // a key of the person's own for it
   files.set(KEYFILE, JSON.stringify({ bindings: [{ context: 'Chat', bindings: { 'alt+i': 'abovePrompt:focus' } }] }))
   const again = await $.ui.mount(unfocused as any)
-  expect(await again.find({ type: 'Text', text: /press alt\+i to move here/ })).toBeDefined()
+  expect(await again.find({ type: 'Text', text: 'Press alt+i to type here' })).toBeDefined()
 })
 
 test('the guide tab says how each part works, with the keys it answers to', async ($, on) => {

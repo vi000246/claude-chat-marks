@@ -461,7 +461,9 @@ async function startChoose($) {
   const t = await strings($)
   if (!(await repliesOnScreen($)).length) return toast($, t.noReplyOnScreen)
   await update($, chooseAtom, () => ({ phase: 'start', search: true, typed: '', points: [], from: null, to: null, note: null }))
-  await $.ui.open({ id: CHOOSE_PANE, title: t.chooseTitle, focus: true, closeOnEscape: true, rows: 4 })
+  // docked beside the conversation (fullscreen, from 110 columns) as narrow as a dock goes; inline
+  // above the prompt, as short as its few lines: no plugin places a pane anywhere smaller
+  await $.ui.open({ id: CHOOSE_PANE, title: t.chooseTitle, focus: true, closeOnEscape: true, rows: 4, columns: 24 })
 }
 
 async function closeChoose($) {
@@ -1519,25 +1521,18 @@ export function register(on) {
         ],
       })
     }
-    const msg = ch.from && seen.get(ch.from.id)
-    const from = msg ? snippetOf(spanText(msg.text, ch.from, { ...ch.from, offset: ch.from.offset + 12 }), 12) : ''
+    // the start is the blue character in the reply: the pane only says what to type
     const say = ch.phase === 'start'
       ? (ch.search ? t.chooseStart : t.chooseStartHint(ch.points.length))
-      : (ch.search ? t.chooseEndSearch(from) : t.chooseEnd(from))
+      : (ch.search ? t.chooseEndSearch : t.chooseEnd)
     return Box({
       flexDirection: 'column',
       children: [
         ...focusLine,
         Text({ children: [say] }),
-        Box({
-          flexDirection: 'row',
-          gap: 2,
-          children: [
-            Text({ weight: 'bold', children: ['> ' + ch.typed] }),
-            ...(ch.note ? [Text({ color: 'warning', children: [ch.note] })] : []),
-            button('chat-marks-choose-cancel', t.cancelEsc, () => closeChoose($), true),
-          ],
-        }),
+        Text({ weight: 'bold', children: ['> ' + ch.typed] }),
+        ...(ch.note ? [Text({ color: 'warning', children: [ch.note] })] : []),
+        button('chat-marks-choose-cancel', t.cancelEsc, () => closeChoose($), true),
         keyButtons,
       ],
     })
