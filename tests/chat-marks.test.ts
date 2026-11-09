@@ -523,12 +523,14 @@ test('the settings tab shows the long-reply height and changes it', async ($, on
   expect((await $.command.run({ command: 'mark', args: 'auto' })).text).toMatch(/No reply is marked by itself/)
 })
 
-const FIELD = 'chat-marks-choose-field'
 // what the reply shows: its hints (amber), its selection (blue)
 const hintsIn = async (msg: any) => (await msg.findAll({ type: 'Text' })).filter((x: any) => x.props.backgroundColor === AMBER).map((x: any) => x.text)
 const selectedIn = async (msg: any) =>
   (await msg.findAll({ type: 'Text' })).filter((x: any) => x.props.backgroundColor === '#264f78').map((x: any) => x.text).join('')
-const type = (pane: any, text: string) => pane.input({ key: FIELD, text, kind: 'change' })
+// keys pressed one by one in the pane, each by the hidden button that answers it
+const type = async (pane: any, keys: string) => {
+  for (const c of keys) await pane.press({ key: 'chat-marks-ch-' + c.charCodeAt(0) })
+}
 
 test('alt+y by keys: two letters land on the one place they match; an end\'s hint copies the span; n leaves it at that', async ($, on) => {
   const text = long('See https://x.dev/a/b for docs. Then more.')
@@ -545,14 +547,16 @@ test('alt+y by keys: two letters land on the one place they match; an end\'s hin
 
   // (a digit: no Boshiamy code has one, and the text has not these two)
   await type(chooser, 'x')
-  await type(chooser, 'x9')
+  expect(await chooser.find({ type: 'Text', text: '> x' })).toBeDefined()
+  await type(chooser, '9')
   expect(await chooser.find({ type: 'Text', text: /Nothing on screen matches "x9"/ })).toBeDefined()
 
   // `ht` is only in the URL: the start is taken at once, and the end hints follow each place it may end
   await type(chooser, 'ht')
   expect(await chooser.find({ type: 'Text', text: /^From "https:\/\/x\.de/ })).toBeDefined()
   expect(await selectedIn(msg)).toBe('h')
-  expect((await hintsIn(msg)).slice(0, 3)).toEqual(['a', 's', 'd'])
+  // never s: it starts looking for the end by letters
+  expect((await hintsIn(msg)).slice(0, 3)).toEqual(['a', 'd', 'f'])
 
   await type(chooser, 'a')
   expect(world.copies).toEqual(['https://x.dev/a/b'])
@@ -584,7 +588,9 @@ test('alt+y by keys: a Chinese start by its Boshiamy code, picked among two by i
   await type(chooser, 'a')
   expect(world.copies).toEqual(['重要的事，'])
 
-  await chooser.input({ key: FIELD, text: '' })
+  // Enter presses the focused yes
+  expect((await chooser.find({ key: 'chat-marks-choose-yes' }))?.props.autoFocus).toBe(true)
+  await chooser.press({ key: 'chat-marks-choose-yes' })
   expect(toasts.at(-1)).toBe('Highlighted')
   expect(await lit(msg)).toEqual(['重要的事，'])
 })
@@ -598,10 +604,26 @@ test('alt+y by keys: / looks for the end by the two letters it ends on', async (
   await hint.press({ key: 'chat-marks-hl' })
   const chooser = await $.ui.mount(pane('chat-marks-choose'))
   await type(chooser, 'be')
-  await type(chooser, '/')
+  await type(chooser, 's')
   expect(await chooser.find({ type: 'Text', text: /type the end's last two letters/ })).toBeDefined()
   await type(chooser, 'ma')
   expect(world.copies).toEqual(['beta gamma'])
+})
+
+test('alt+y by keys without the keyboard (text in the prompt): the pane says which key moves it there', async ($, on) => {
+  const text = long('一段回應')
+  const { files } = stub(on, { rows: [{ role: 'assistant', text, toolUses: [] }] })
+  await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
+  const hint = await $.ui.mount(HINT)
+  await hint.press({ key: 'chat-marks-hl' })
+  const unfocused = { ...pane('chat-marks-choose'), props: { ...pane('chat-marks-choose').props, isFocused: false } }
+  const chooser = await $.ui.mount(unfocused as any)
+  expect(await chooser.find({ type: 'Text', text: /press ctrl\+x tab to move here/ })).toBeDefined()
+  await chooser.unmount()
+  // a key of the person's own for it
+  files.set(KEYFILE, JSON.stringify({ bindings: [{ context: 'Chat', bindings: { 'alt+i': 'abovePrompt:focus' } }] }))
+  const again = await $.ui.mount(unfocused as any)
+  expect(await again.find({ type: 'Text', text: /press alt\+i to move here/ })).toBeDefined()
 })
 
 test('the guide tab says how each part works, with the keys it answers to', async ($, on) => {

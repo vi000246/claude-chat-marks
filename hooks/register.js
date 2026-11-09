@@ -400,16 +400,28 @@ async function markKey($) {
 
 // ---- highlighting by keys ---------------------------------------------------------------
 //
-// alt+y with no new mouse selection. Everything is typed into one field of CHOOSE_PANE:
+// alt+y with no new mouse selection. Each key pressed in CHOOSE_PANE acts at once, no Enter (a
+// hidden Button per key: a field's text is the person's until the hook draws another, so it cannot
+// be cleared between steps):
 //   start  two letters, easymotion-s2: the places on screen they land on (the same two characters,
 //          or a Chinese one by its Boshiamy code); one is taken at once, more get hints to type
 //   end    hints just past each place the span may end (a sentence's or a clause's punctuation,
-//          a line's end, a URL's); `/` instead: two letters, the end just past where they land
+//          a line's end, a URL's); `s` instead (no end hint is s): two letters, the end just past
+//          where they land
 //   then   the span is copied, and y (or Enter) highlights it, or takes its highlight off when it
 //          is lit already; n leaves it copied
+// Hints never start another (marks-core hintLabels), so a whole one is taken as soon as it is
+// typed. A pane's hotkey is a letter or a digit, so those are what the two letters may be. A pane opened with text in the composer does not get the keyboard: it says to press
+// abovePrompt:focus (ctrl+x tab by default) to move there.
 // A point here is { id, block, offset } (marks-core blocksOf), a hint's point with its `label`.
 
-const CHOOSE_FIELD = 'chat-marks-choose-field'
+// the keys the pane answers (a hotkey is one lower-case letter or digit; the search ignores case)
+const CHOOSE_KEYS = 'abcdefghijklmnopqrstuvwxyz0123456789'
+// in the end's hints `s` is never one: it starts looking for the end by two letters
+const END_SEARCH = 's'
+const END_LETTERS = LETTERS.replace(END_SEARCH, '')
+const chooseKey = c => 'chat-marks-ch-' + c.charCodeAt(0)
+const FOCUS_ACTION = 'abovePrompt:focus'
 const boshSets = new Map()
 const bosh = two => {
   if (!boshSets.has(two)) boshSets.set(two, new Set(BOSHIAMY2[two] ?? ''))
@@ -429,9 +441,9 @@ async function repliesOnScreen($) {
     })
 }
 
-// Hints for points ([{ id, block, offset }] in reading order, each reply's in `replies`): those on
-// a row the screen shows get the single letters.
-function labelled(points, replies) {
+// Hints for points ([{ id, block, offset }] in reading order, each reply's in `replies`), of the
+// letters in `alphabet`: those on a row the screen shows get the single letters.
+function labelled(points, replies, alphabet = LETTERS) {
   const of = new Map(replies.map(r => [r.id, r]))
   const shows = p => {
     const r = of.get(p.id)
@@ -439,7 +451,7 @@ function labelled(points, replies) {
     return !!r?.view && row >= r.view.first && row <= r.view.last
   }
   const order = [...points.filter(shows), ...points.filter(p => !shows(p))]
-  const labels = hintLabels(order.length, LETTERS)
+  const labels = hintLabels(order.length, alphabet)
   const byPoint = new Map(order.map((p, i) => [p, labels[i]]))
   return points.map(p => ({ ...p, label: byPoint.get(p) }))
 }
@@ -460,23 +472,21 @@ async function closeChoose($) {
 
 const setChoose = ($, fields) => update($, chooseAtom, x => x && { ...x, ...fields })
 
-// The field changed: two letters to look for, a hint's letters, `/`, or y / n.
-async function typeChoose($, value) {
+// One key pressed: a letter of the two to look for, of a hint, `/`, or y / n.
+async function keyChoose($, c) {
   const ch = await read($, chooseAtom)
   if (!ch) return
-  const v = String(value ?? '')
   if (ch.phase === 'confirm') {
-    const c = v.slice(-1).toLowerCase()
-    if (c === 'y' || c === 'n') return answerChoose($, c === 'y')
-    return setChoose($, { typed: '' })
+    if (c === 'y' || c === 'n') await answerChoose($, c === 'y')
+    return
   }
   if (ch.search) {
-    const two = [...v.replace(/\s/g, '')].slice(0, 2).join('')
-    if ([...two].length < 2) return setChoose($, { typed: two, note: null })
+    const two = ch.typed + c
+    if (two.length < 2) return setChoose($, { typed: two, note: null })
     return searchTwo($, ch, two)
   }
-  if (ch.phase === 'end' && v.endsWith('/')) return setChoose($, { search: true, typed: '', points: [], note: null })
-  const typed = v.toLowerCase()
+  if (ch.phase === 'end' && c === END_SEARCH && !ch.typed) return setChoose($, { search: true, typed: '', points: [], note: null })
+  const typed = ch.typed + c
   const hit = ch.points.find(p => p.label === typed)
   if (hit) return ch.phase === 'start' ? chooseStart($, hit) : chooseEnd($, hit)
   await setChoose($, { typed: ch.points.some(p => p.label?.startsWith(typed)) ? typed : '' })
@@ -497,7 +507,8 @@ async function searchTwo($, ch, two) {
   }
   if (!found.length) return setChoose($, { typed: '', note: t.noMatch(two) })
   if (found.length === 1) return ch.phase === 'start' ? chooseStart($, found[0]) : chooseEnd($, found[0])
-  await setChoose($, { search: false, typed: '', points: labelled(found, replies), note: null })
+  const alphabet = ch.phase === 'end' ? END_LETTERS : LETTERS
+  await setChoose($, { search: false, typed: '', points: labelled(found, replies, alphabet), note: null })
 }
 
 // A reply by its row, from what was drawn: { id, text, blocks, view }.
@@ -511,7 +522,7 @@ async function chooseStart($, p) {
   const r = replyOf(p.id)
   const from = { id: p.id, block: p.block, offset: p.offset }
   const ends = endsAfter(r.blocks, from).map(({ block, offset }) => ({ id: p.id, block, offset }))
-  await setChoose($, { phase: 'end', search: false, typed: '', from, points: labelled(ends, [r]), note: null })
+  await setChoose($, { phase: 'end', search: false, typed: '', from, points: labelled(ends, [r], END_LETTERS), note: null })
 }
 
 // The end taken: the span is copied, and the pane asks about highlighting it.
@@ -1473,30 +1484,38 @@ export function register(on) {
     return Box({ flexDirection: 'column', children: [Text({ dimColor: true, children: [t.pickHint] }), ...rows] })
   })
 
-  // alt+y by keys: what to type now, the field everything is typed into, and at the end the word
-  // on the copy with y / n.
+  // alt+y by keys: what to type now and what is typed so far, a hidden Button per key, and at the
+  // end the word on the copy with y / n. Without the keyboard, how to move it here.
   on('ui.render', { component: 'Pane', requestId: CHOOSE_PANE }, async ($, e) => {
-    const { Box, Button, Input, Text } = $.ui.resolve(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
     const t = await strings($)
     const ch = await read($, chooseAtom)
     if (!ch) return Box({ children: [] })
-    const field = Input({
-      key: CHOOSE_FIELD,
-      label: '> ',
-      value: ch.typed,
-      autoFocus: true,
-      onInput: value => typeChoose($, value),
-      onSubmit: safe($, async () => {
-        if ((await read($, chooseAtom))?.phase === 'confirm') await answerChoose($, true)
-      }),
+    const keyButtons = Box({
+      display: 'none',
+      children: [...CHOOSE_KEYS].map(c => Button({ key: chooseKey(c), label: c, hotkey: c, onPress: safe($, () => keyChoose($, c)) })),
     })
+    let focusLine = []
+    if (e.props.isFocused === false) {
+      const doc = await readBindings($, await bindingsPath($))
+      focusLine = [Text({ color: 'warning', children: [t.focusHere((doc && chordFor(doc, FOCUS_ACTION)) || 'ctrl+x tab')] })]
+    }
+    const button = (key, label, fn, isFirst) => Button({ key, label, ...(isFirst ? { autoFocus: true } : {}), onPress: safe($, fn) })
     if (ch.phase === 'confirm') {
-      const yn = (key, label, yes) => Button({ key, label, onPress: safe($, () => answerChoose($, yes)) })
       return Box({
         flexDirection: 'column',
         children: [
+          ...focusLine,
           Text({ children: [(ch.isCopied ? t.copied(ch.count) : t.notCopied) + ' ' + (ch.removing ? t.askUnhighlight : t.askHighlight)] }),
-          Box({ flexDirection: 'row', gap: 2, children: [field, yn('chat-marks-choose-yes', t.yes, true), yn('chat-marks-choose-no', t.no, false)] }),
+          Box({
+            flexDirection: 'row',
+            gap: 2,
+            children: [
+              button('chat-marks-choose-yes', t.yes, () => answerChoose($, true), true),
+              button('chat-marks-choose-no', t.no, () => answerChoose($, false)),
+            ],
+          }),
+          keyButtons,
         ],
       })
     }
@@ -1508,9 +1527,18 @@ export function register(on) {
     return Box({
       flexDirection: 'column',
       children: [
+        ...focusLine,
         Text({ children: [say] }),
-        field,
-        Text(ch.note ? { color: 'warning', children: [ch.note] } : { dimColor: true, children: [t.chooseHint] }),
+        Box({
+          flexDirection: 'row',
+          gap: 2,
+          children: [
+            Text({ weight: 'bold', children: ['> ' + ch.typed] }),
+            ...(ch.note ? [Text({ color: 'warning', children: [ch.note] })] : []),
+            button('chat-marks-choose-cancel', t.cancelEsc, () => closeChoose($), true),
+          ],
+        }),
+        keyButtons,
       ],
     })
   })
