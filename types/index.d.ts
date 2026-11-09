@@ -16,7 +16,26 @@ declare module 'claude-code' {
       marks: ChatMark[]
       highlights: Record<string, ChatHighlight>
       auto: ChatAutoMark[]
-      pick: { items: ChatPickItem[] } | null
+      pick: { purpose: 'mark' | 'highlight'; items: ChatPickItem[] } | null
+      choose: {
+        id: string
+        key: string
+        labels: (string | null)[]
+        typed: string
+        from: number | null
+        to: number | null
+        phase: 'from' | 'to' | 'confirm'
+        frags?: string[]
+        count?: number
+        isCopied?: boolean
+        removing?: boolean
+      } | null
+      bar: {
+        stops: { at: number; how: 'mark' | 'highlight' | 'auto'; isCurrent: boolean }[]
+        thumb: [number, number]
+        n: number
+        total: number
+      } | null
       panel: {
         tab: 'marks' | 'keys'
         mode: 'jump' | 'delete'

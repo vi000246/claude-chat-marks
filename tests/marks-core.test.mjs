@@ -3,8 +3,9 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
-  anchorOf, autoMarks, hangOf, jumpTarget, keysMeet, layout, linesOf, litOf, normMap, padCells, plainOf, positions,
-  previewOf, rowsOf, selectionFragments, splitAt, toggleFragments,
+  anchorOf, autoMarks, barCells, fractionOf, hangOf, hintLabels, hintOrder, jumpTarget, keysMeet, layout, linesOf, litOf,
+  normMap, padCells, pickLayout, plainOf, positions, previewOf, rowTops, rowsOf, selectionFragments, sentencesOf,
+  spanOf, splitAt, toggleFragments,
 } from '../hooks/marks-core.mjs'
 
 const lit = parts => parts.filter(p => p.type === 'runs').flatMap(p => p.runs.filter(r => r.hl).map(r => r.text))
@@ -164,6 +165,69 @@ test('auto marks: long replies only, a near one left out, tool calls counted', (
   // a lower bar takes more; with no gap the near one too
   assert.deepEqual(autoMarks(rows, { columns: 80, minRows: 12, gap: 0 }).map(a => a.index), [3, 5, 8])
   assert.deepEqual(autoMarks(rows, { columns: 80, minRows: 20, gap: 20 }).map(a => a.index), [8])
+})
+
+test('a position is a fraction of the conversation\'s rows', () => {
+  const rows = [
+    { role: 'user', text: 'q', toolUses: [] },
+    { role: 'assistant', text: lines('answer', 8), toolUses: [] },
+  ]
+  const geo = rowTops(rows, 80)
+  assert.deepEqual(geo, { tops: [0, 2], total: 11 })
+  assert.equal(fractionOf(0, geo), 0)
+  assert.equal(fractionOf(1, geo), 2 / 11)
+  assert.equal(fractionOf(1.5, geo), (2 + 4.5) / 11)
+})
+
+test('the bar: the stops in their cells, the one jumped to winning a shared cell, the screen\'s stretch thick', () => {
+  const cells = barCells(11, [
+    { at: 0, how: 'auto' },
+    { at: 0.5, how: 'auto' },
+    { at: 0.5, how: 'mark', isCurrent: true },
+    { at: 1, how: 'highlight' },
+  ], [0.5, 0.7])
+  assert.equal(cells.map(c => c.ch).join(''), '◇────◆━━──■')
+  assert.ok(cells[5].isCurrent)
+  assert.equal(cells.filter(c => c.isThumb).length, 3)
+})
+
+test('sentences: cut at 。！？ and a full stop before a space, a line of code or a table whole, a list\'s 1. kept', () => {
+  const md = '# 標題\n\n第一句。第二句！Third one. Fourth\n\n1. 項目一。\n2. 項目二\n\n```\nconst a = 1. b\n```\n\n| 甲。 | 乙 |\n|---|---|\n| 丙 | 丁 |'
+  const { blocks, units } = sentencesOf(md)
+  const texts = units.map(u => blocks[u.block].text.slice(u.start, u.end))
+  assert.deepEqual(texts, ['標題', '第一句。', '第二句！', 'Third one.', 'Fourth', '1. 項目一。', '2. 項目二', 'const a = 1. b', '| 甲。 | 乙 |', '| 丙 | 丁 |'])
+  // a table's rule row is not counted (near enough for which hints show first)
+  assert.deepEqual(units.map(u => u.line), [0, 2, 2, 2, 2, 4, 5, 8, 11, 12])
+})
+
+test('hint labels: single letters while they last, then two with no label starting another', () => {
+  assert.deepEqual(hintLabels(3, 'abc'), ['a', 'b', 'c'])
+  const ls = hintLabels(5, 'abc')
+  assert.deepEqual(ls, ['a', 'b', 'ca', 'cb', 'cc'])
+  for (const a of ls) for (const b of ls) if (a !== b) assert.ok(!b.startsWith(a))
+  assert.equal(hintLabels(9, 'abc').length, 9)
+})
+
+test('hints go first to the sentences on screen', () => {
+  const md = 'one.\ntwo.\nthree.\nfour.'
+  const { units } = sentencesOf(md)
+  // rows 1..4 hold the lines; rows 3 and 4 show
+  assert.deepEqual(hintOrder(md, units, 80, { first: 3, last: 4 }), [2, 3, 0, 1])
+  assert.deepEqual(hintOrder(md, units, 80, null), [0, 1, 2, 3])
+})
+
+test('picked sentences: labels drawn before them, the span selected, its text highlightable', () => {
+  const md = '前言一句。重點**開始**了。\n\n下一段的結尾。最後'
+  const parts = pickLayout(md, [], { labels: ['a', 'b', 'c', 'd', 'e'], from: 1, to: 2 })
+  assert.equal(parts.length, 2)
+  assert.deepEqual(parts[0].runs.filter(r => r.hint).map(r => r.text), ['a', 'b'])
+  assert.equal(parts[0].runs.filter(r => r.sel).map(r => r.text).join(''), '重點開始了。')
+  assert.equal(parts[1].runs.filter(r => r.sel).map(r => r.text).join(''), '下一段的結尾。')
+  const text = spanOf(md, 2, 1)
+  assert.equal(text, '重點開始了。\n\n下一段的結尾。')
+  // what is copied lights up again as a highlight of the same words
+  const lit = layout(md, selectionFragments(text))
+  assert.deepEqual(lit.filter(p => p.type === 'runs').map(p => litOf(p.runs)), ['重點開始了。', '下一段的結尾。'])
 })
 
 test('keys meet when equal, or one long enough is the head of the other', () => {

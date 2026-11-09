@@ -37,7 +37,7 @@ const prompt = (requestId: string, text: string, onScreen: unknown = null) => ({
   props: { text, origin: { kind: 'composer' }, isExpanded: true, onScreen },
 }) as const
 
-type World = { sel?: unknown; rows?: unknown[]; files?: Map<string, string> }
+type World = { sel?: unknown; rows?: unknown[]; files?: Map<string, string>; copies?: string[] }
 
 // `sel` is what the mouse selected; `rows` what $.session.messages() answers; `files` the disk.
 function stub(on: any, world: World) {
@@ -57,6 +57,11 @@ function stub(on: any, world: World) {
     return { value: undefined }
   })
   on('session.id', () => ({ value: 'sess-1' }))
+  on('session.root', () => ({ value: '/work/proj' }))
+  on('ui.copy', ($: any, e: any) => {
+    ;(world.copies ??= []).push(e.text)
+    return { value: { isCopied: true } }
+  })
   on('session.messages', () => ({ value: world.rows ?? [] }))
   on('ui.selection', () => ({ value: world.sel }))
   on('ui.toast', ($: any, e: any) => {
@@ -98,8 +103,8 @@ function stub(on: any, world: World) {
 const lit = async (ui: any, color = AMBER) =>
   (await ui.findAll({ type: 'Text' })).filter((t: any) => t.props.backgroundColor === color).map((t: any) => t.text)
 
-test('alt+y lights the selected words, and again takes them off', async ($, on) => {
-  const world = { sel: { text: '很重要 的事', requestId: 'r1' } }
+test('alt+y lights the selected words, and a selection over them takes them off', async ($, on) => {
+  const world: World = { sel: { text: '很重要 的事', requestId: 'r1' } }
   const { toasts, store } = stub(on, world)
   const msg = await $.ui.mount(reply('r1', '前言。\n\n這是 **很重要** 的事\n\n結尾', { first: 0, last: 5, of: 6 }))
   const hint = await $.ui.mount(HINT)
@@ -111,6 +116,8 @@ test('alt+y lights the selected words, and again takes them off', async ($, on) 
   expect(await msg.find({ type: 'Markdown', text: '前言。' })).toBeDefined()
   expect(store.get('s:sess-1')).toBeDefined()
 
+  // a selection is answered until another is made: a new one, over part of the lit words
+  world.sel = { text: '重要', requestId: 'r1' }
   await hint.press({ key: 'chat-marks-hl' })
   expect(toasts.at(-1)).toBe('Highlight removed')
   expect(await lit(msg)).toEqual([])
@@ -241,7 +248,8 @@ test('alt+j goes to scroll when there are marks', async ($, on) => {
   await markByLetter($, hint, 1)
 
   // The kit hands a transcript row's $.ui.scroll to nothing a test can answer, so this only shows
-  // the jump found its marks and went to scroll; which one it picks is in marks-core.test.mjs.
+  // the jump found its marks and went to scroll; which one it picks, and the bar a jump made shows
+  // (barCells), are in marks-core.test.mjs.
   await hint.press({ key: 'chat-marks-next' })
   expect(toasts.at(-1)).toMatch(/ui\.scroll/)
 })
@@ -515,6 +523,76 @@ test('the settings tab shows the long-reply height and changes it', async ($, on
   expect((await $.command.run({ command: 'mark', args: 'auto' })).text).toMatch(/No reply is marked by itself/)
 })
 
+test('alt+y with no new selection: hints on a reply\'s sentences; a first and a last are copied, y highlights', async ($, on) => {
+  const text = long('前言一句。重點在這裡。')
+  const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }] }
+  const { toasts, opened } = stub(on, world)
+  const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
+  const hint = await $.ui.mount(HINT)
+
+  await hint.press({ key: 'chat-marks-hl' })
+  expect(opened).toEqual(['chat-marks-pick'])
+  const picker = await $.ui.mount(pane('chat-marks-pick'))
+  expect(await picker.find({ type: 'Text', text: /pick sentences in it by keys/ })).toBeDefined()
+  await picker.press({ key: 'chat-marks-pick-0' })
+  await picker.unmount()
+  expect(opened.at(-1)).toBe('chat-marks-choose')
+
+  // a hint before each sentence, drawn in the reply itself
+  const hints = async () => (await msg.findAll({ type: 'Text' })).filter((x: any) => x.props.backgroundColor === AMBER).map((x: any) => x.text)
+  expect((await hints()).slice(0, 3)).toEqual(['a', 's', 'd'])
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
+  expect(await chooser.find({ type: 'Text', text: /first sentence/ })).toBeDefined()
+
+  // the same hint twice: that sentence alone
+  await chooser.press({ key: 'chat-marks-hint-s' })
+  expect(await chooser.find({ type: 'Text', text: /From "重點在這裡。"/ })).toBeDefined()
+  await chooser.press({ key: 'chat-marks-hint-s' })
+  expect(world.copies).toEqual(['重點在這裡。'])
+  expect(await chooser.find({ type: 'Text', text: 'Copied 6 characters. Highlight it?' })).toBeDefined()
+  const selected = (await msg.findAll({ type: 'Text' })).filter((x: any) => x.props.backgroundColor === '#264f78')
+  expect(selected.map((x: any) => x.text).join('')).toBe('重點在這裡。')
+  expect(await hints()).toEqual([])
+
+  await chooser.press({ key: 'chat-marks-choose-yes' })
+  expect(toasts.at(-1)).toBe('Highlighted')
+  expect(await lit(msg)).toEqual(['重點在這裡。'])
+})
+
+test('two-letter hints: the first letter narrows them, the second picks', async ($, on) => {
+  // 30 sentences: more than the 23 letters, so some hints take two
+  const text = Array.from({ length: 30 }, (_, i) => `第${i + 1}句。`).join('\n')
+  const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }] }
+  stub(on, world)
+  const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 30, of: 31 }))
+  const hint = await $.ui.mount(HINT)
+  await hint.press({ key: 'chat-marks-hl' })
+  const picker = await $.ui.mount(pane('chat-marks-pick'))
+  await picker.press({ key: 'chat-marks-pick-0' })
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
+  // 22 single letters, then m + a letter
+  await chooser.press({ key: 'chat-marks-hint-m' })
+  expect(await chooser.find({ type: 'Text', text: /^m…/ })).toBeDefined()
+  expect(await chooser.find({ key: 'chat-marks-hint-a' })).toBeDefined()
+  await chooser.press({ key: 'chat-marks-hint-a' })
+  expect(await chooser.find({ type: 'Text', text: /From "第23句。"/ })).toBeDefined()
+  await chooser.press({ key: 'chat-marks-hint-m' })
+  await chooser.press({ key: 'chat-marks-hint-s' })
+  expect(world.copies).toEqual(['第23句。\n第24句。'])
+  await chooser.press({ key: 'chat-marks-choose-no' })
+  expect(await lit(msg)).toEqual([])
+})
+
+test('an auto mark not drawn since a reload is found in the transcript file', async ($, on) => {
+  const text = long('沒畫過的報告')
+  const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }] }
+  const { store, files } = stub(on, world)
+  const line = { uuid: 'old-uuid', isSidechain: false, message: { role: 'assistant', content: [{ type: 'text', text }] } }
+  files.set('/home/me/.claude/projects/-work-proj/sess-1.jsonl', '{"type":"user"}\n' + JSON.stringify(line) + '\n')
+  await turnEnds($)
+  expect((store.get('s:sess-1') as any).auto.map((a: any) => a.id)).toEqual(['old-uuid'])
+})
+
 test('/mark-clear takes every mark and highlight off', async ($, on) => {
   const world: World = { rows: [{ role: 'assistant', text: '一段重點文字', toolUses: [] }] }
   const { store } = stub(on, world)
@@ -534,7 +612,7 @@ test('/mark-clear takes every mark and highlight off', async ($, on) => {
 })
 
 test('/mark color and /mark lang change the background and the language', async ($, on) => {
-  const world = { sel: { text: '重點文字', requestId: 'r1' } }
+  const world: World = { sel: { text: '重點文字', requestId: 'r1' } }
   const { toasts } = stub(on, world)
   const msg = await $.ui.mount(reply('r1', '一段重點文字'))
   const hint = await $.ui.mount(HINT)
@@ -545,6 +623,7 @@ test('/mark color and /mark lang change the background and the language', async 
   expect((await $.command.run({ command: 'mark', args: 'color yellowish' })).text).toMatch(/is #4d3b00/)
 
   expect((await $.command.run({ command: 'mark', args: 'lang zh' })).text).toMatch(/語言：中文/)
+  world.sel = { text: '重點', requestId: 'r1' }
   await hint.press({ key: 'chat-marks-hl' })
   expect(toasts.at(-1)).toBe('已取消重點')
 })

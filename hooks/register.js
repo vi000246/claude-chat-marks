@@ -4,8 +4,12 @@
 //          the ones marked already); a letter marks that one, or, on one already marked (its
 //          letter red, "unmark?" beside it), takes the mark off
 //   alt+j  next stop      alt+k  previous stop: auto marks, marks and highlights alike
-//   alt+y  highlight the mouse selection (Claude's replies); again on it takes it off, as does the
-//          button that shows while the pointer is over a highlighted block
+//   alt+y  highlight the mouse selection (Claude's replies); again on (part of) it takes it off,
+//          as does the button that shows while the pointer is over a highlighted block. With no
+//          new mouse selection: letters on the long replies, then hints on the sentences of the
+//          one picked; a first and a last hint copy that span and ask whether to highlight it
+//   the bar  above the prompt for a few seconds after alt+j / alt+k: where every stop lies in the
+//          conversation, the one jumped to, and about what the screen shows
 //   alt+o  the panel (also /mark), two tabs (1, 2):
 //          marks    every mark and highlight in conversation order (no auto mark), a letter each;
 //                   j / k move the cursor and show the conversation there, a letter or Enter jumps
@@ -36,7 +40,11 @@
 //   highlights  { <requestId>: { key, snippet, text, frags: [normalized line] } }
 //   auto        [{ key, id, snippet }]  the auto marks, worked out again at each turn's end; `id` the
 //               row it was last drawn under (null while none was), for a jump before it is redrawn
-//   pick        { items: [{ id, kind, key, snippet }] } while alt+m's letters are up, else null
+//   pick        { purpose: 'mark' | 'highlight', items: [{ id, kind, key, snippet }] } while alt+m's
+//               (or alt+y's) letters are up, else null
+//   choose      { id, key, labels, typed, from, to, phase: 'from' | 'to' | 'confirm', ... } while a
+//               reply's sentences carry hints (labels by sentence), else null
+//   bar         { stops: [{ at, how, isCurrent }], thumb, n, total } while the bar shows
 //   panel       { tab, mode: 'jump' | 'delete', cursor: <target id>, origin, confirmClear } while
 //               the panel is up; origin: where Escape scrolls back to
 //   keys        { armed, mods, letter, rows, pending: { slot, chord } | null, note, tone } while the
@@ -51,8 +59,9 @@
 
 import { atom, read, update } from 'claude-code'
 import {
-  LETTERS, anchorOf, autoMarks, hangOf, jumpTarget, keyOf, keysMeet, layout, linesOf, litOf, padCells, plainOf,
-  positions, previewOf, rowsOf, selectionFragments, snippetOf, splitAt, toggleFragments,
+  LETTERS, anchorOf, autoMarks, barCells, fractionOf, hangOf, hintLabels, hintOrder, jumpTarget, keyOf, keysMeet,
+  layout, linesOf, litOf, padCells, pickLayout, plainOf, positions, previewOf, rowTops, rowsOf, selectionFragments,
+  sentencesOf, snippetOf, spanOf, splitAt, toggleFragments,
 } from './marks-core.mjs'
 import { canon, chordFor, globalProblem, isPanelKey, rebind, unbind, usersOf } from './keys-core.mjs'
 import { LANGS, STRINGS } from './strings.mjs'
@@ -71,12 +80,17 @@ const GLOBAL_SLOTS = ['mark', 'next', 'prev', 'highlight', 'panel']
 const PANEL_SLOTS = ['down', 'up', 'remove']
 const DEFAULT_PANEL_KEYS = { down: 'j', up: 'k', remove: 'x' }
 const PICK_PANE = 'chat-marks-pick'
+const CHOOSE_PANE = 'chat-marks-choose'
 const PANEL = 'chat-marks'
 const KEEP_SESSIONS = 40
 // dark amber: readable white text on a black terminal without glaring
 const DEFAULT_COLOR = '#6b4f00'
 // a letter over a message already marked: the press takes the mark off
 const UNMARK_COLOR = '#8b1e1e'
+// the sentences picked by keys, before they are copied and highlighted
+const SELECT_COLOR = '#264f78'
+// how long the bar under the conversation stays after a jump
+const BAR_MS = 4000
 const COLOR = /^#[0-9a-f]{6}$/i
 const ENTRY = 'chat-marks-e-'
 // a reply this many rows tall (or taller) is marked by itself, and gets one of alt+m's letters
@@ -85,6 +99,8 @@ const DEFAULT_AUTO_ROWS = 12
 const marksAtom = atom({ plugin: 'chat-marks', key: 'marks' }, [])
 const hlAtom = atom({ plugin: 'chat-marks', key: 'highlights' }, {})
 const autoAtom = atom({ plugin: 'chat-marks', key: 'auto' }, [])
+const chooseAtom = atom({ plugin: 'chat-marks', key: 'choose' }, null)
+const barAtom = atom({ plugin: 'chat-marks', key: 'bar' }, null)
 const pickAtom = atom({ plugin: 'chat-marks', key: 'pick' }, null)
 const panelAtom = atom({ plugin: 'chat-marks', key: 'panel' }, null)
 const colorAtom = atom({ plugin: 'chat-marks', key: 'color' }, DEFAULT_COLOR)
@@ -100,6 +116,13 @@ let draws = 0
 let cursor = null
 // the conversation's size in cells, as the last message drawn saw it: how tall a reply is
 let screen = { columns: 100, rows: 40 }
+// the mouse selection alt+y last took: $.ui.selection() answers it until another is made, so
+// alt+y again with nothing new selected picks sentences by keys instead
+let lastSel = null
+// the bar's pending hide
+let barTimer = null
+// auto marks looked for in the transcript file and not found there, until the next turn's end
+const unfound = new Set()
 // the marks panel's own keys (cfg.keys), and the letters left for its entries and alt+m's picker
 let keys = { ...DEFAULT_PANEL_KEYS }
 let letters = LETTERS
@@ -171,12 +194,13 @@ async function placedTargets($, extra = [], withAuto = false) {
   const auto = withAuto ? await refreshAuto($) : []
   const items = targetsOf(await read($, marksAtom), await read($, hlAtom), auto)
   const msgs = [...new Map(items.map(t => [t.id, { id: t.id, kind: t.kind, key: t.key }])).values()]
-  const pos = positions(await $.session.messages(), [...msgs, ...extra])
+  const rows = await $.session.messages()
+  const pos = positions(rows, [...msgs, ...extra])
   const placed = items
     .filter(t => pos.has(t.id))
     .map(t => ({ ...t, pos: pos.get(t.id) + (t.block == null ? 0 : (t.block + 1) * 1e-6) }))
     .sort((a, b) => a.pos - b.pos)
-  return { placed, pos }
+  return { placed, pos, rows }
 }
 
 // Where the reader is: the last target jumped to while its message is still on screen, else the
@@ -247,8 +271,41 @@ function drawnId(key) {
   return best?.id ?? null
 }
 
-// The auto marks worked out again from the conversation. Only the rows they were drawn under carry
-// over from the last time, so a jump reaches one not drawn since a reload or a resume.
+// The session's transcript file: where Claude Code keeps it, under the folder named after the
+// directory the session started in.
+async function transcriptPath($) {
+  const root = (await $.session.root().catch(() => '')) || (await $.session.cwd())
+  return `${await configDir($)}/projects/${root.replace(/[^A-Za-z0-9]/g, '-')}/${await $.session.id()}.jsonl`
+}
+
+// The row ids of Claude's text blocks, by the head of their text, from the transcript file: each
+// block of a reply is a line there under the id its row is drawn by. Empty when it can't be read.
+async function transcriptIds($) {
+  let text
+  try {
+    text = await $.fs.read(await transcriptPath($))
+  } catch {
+    // not there, not readable, or no directory to name it by
+    return new Map()
+  }
+  const ids = new Map()
+  for (const line of text.split('\n')) {
+    if (!line.includes('"role":"assistant"') || !line.includes('"type":"text"')) continue
+    let o
+    try {
+      o = JSON.parse(line)
+    } catch {
+      continue
+    }
+    if (o.isSidechain || !o.uuid) continue
+    for (const b of o.message?.content ?? []) if (b.type === 'text' && b.text?.trim()) ids.set(keyOf(b.text), o.uuid)
+  }
+  return ids
+}
+
+// The auto marks worked out again from the conversation. The row each is drawn under comes from
+// the rows drawn since the module loaded, else the last time, else the transcript file (a reply
+// not drawn since a reload or a resume), so a jump reaches every one.
 async function refreshAuto($) {
   const minRows = await autoRows($)
   const rows = minRows ? await $.session.messages() : []
@@ -259,6 +316,15 @@ async function refreshAuto($) {
     id: drawnId(key) ?? before.find(a => a.key === key)?.id ?? null,
     snippet: snippetOf(plainOf(rows[index].text)),
   }))
+  const missing = next.filter(a => !a.id && !unfound.has(a.key))
+  if (missing.length) {
+    const ids = await transcriptIds($)
+    for (const a of missing) {
+      const found = [...ids].find(([k]) => keysMeet(k, a.key))
+      if (found) a.id = found[1]
+      else unfound.add(a.key)
+    }
+  }
   if (JSON.stringify(next) === JSON.stringify(before)) return next
   await update($, autoAtom, () => next)
   await persist($)
@@ -313,30 +379,105 @@ async function unmark($, id) {
 
 // alt+m: a letter over each long reply on screen and each message marked already, or over every
 // message when no long reply shows; nothing is marked until one is pressed.
-async function markKey($) {
+const markKey = $ => putLetters($, 'mark')
+
+// The letters over the messages on screen, for marking one (`mark`) or picking the reply whose
+// sentences get hints (`highlight`: Claude's replies alone, never one marked for being so).
+async function putLetters($, purpose) {
   if (await read($, pickAtom)) return closePick($)
+  await closeChoose($)
   const t = await strings($)
   const visible = visibleNow()
   const pos = positions(await $.session.messages(), visible)
-  const shown = visible.filter(v => pos.has(v.id)).sort((a, b) => pos.get(a.id) - pos.get(b.id))
-  if (!shown.length) return toast($, t.noScreen)
+  const shown = visible
+    .filter(v => pos.has(v.id) && (purpose === 'mark' || v.kind === 'assistant'))
+    .sort((a, b) => pos.get(a.id) - pos.get(b.id))
+  if (!shown.length) return toast($, purpose === 'mark' ? t.noScreen : t.noReplyOnScreen)
   const minRows = (await autoRows($)) || DEFAULT_AUTO_ROWS
   const marks = await read($, marksAtom)
   const isLong = v => v.kind === 'assistant' && (seen.get(v.id)?.onScreen?.of ?? rowsOf(seen.get(v.id)?.text, bodyColumns())) >= minRows
-  const isMarked = v => marks.some(m => m.id === v.id || (m.kind === v.kind && m.key === v.key))
+  const isMarked = v => purpose === 'mark' && marks.some(m => m.id === v.id || (m.kind === v.kind && m.key === v.key))
   const offered = shown.some(isLong) ? shown.filter(v => isLong(v) || isMarked(v)) : shown
   const items = offered.slice(0, letters.length).map(({ id, kind, key, snippet, preview }) => ({ id, kind, key, snippet, preview }))
-  await update($, pickAtom, () => ({ items }))
-  await $.ui.open({ id: PICK_PANE, title: t.pickTitle, focus: true, closeOnEscape: true, rows: items.length + 2 })
+  await update($, pickAtom, () => ({ purpose, items }))
+  const title = purpose === 'mark' ? t.pickTitle : t.hlPickTitle
+  await $.ui.open({ id: PICK_PANE, title, focus: true, closeOnEscape: true, rows: items.length + 2 })
+}
+
+// ---- highlighting by keys ---------------------------------------------------------------
+//
+// alt+y with no new mouse selection: putLetters('highlight'), then the reply picked gets a hint
+// before each sentence (CHOOSE_PANE takes the keys): one hint for the first sentence, one for
+// the last (the same twice for one). The span is copied, and the pane asks whether to highlight
+// it too (or take its highlight off, when it is lit already): y or n.
+
+// A reply picked by its letter: its sentences get their hints, the ones on screen the shortest.
+async function startChoose($, item) {
+  await closePick($)
+  const t = await strings($)
+  const msg = seen.get(item.id)
+  const { units } = sentencesOf(msg?.text)
+  if (!units.length) return toast($, t.noSentences)
+  const order = hintOrder(msg.text, units, bodyColumns(), msg.onScreen)
+  const labels = []
+  hintLabels(units.length, LETTERS).forEach((label, k) => (labels[order[k]] = label))
+  await update($, chooseAtom, () => ({ id: item.id, key: item.key, labels, typed: '', from: null, to: null, phase: 'from' }))
+  await $.ui.open({ id: CHOOSE_PANE, title: t.chooseTitle, focus: true, closeOnEscape: true, rows: 3 })
+}
+
+async function closeChoose($) {
+  if (!(await read($, chooseAtom))) return
+  await update($, chooseAtom, () => null)
+  await $.ui.close({ id: CHOOSE_PANE })
+}
+
+// A letter typed while hints are up: a whole label picks its sentence; the first of two narrows
+// the hints to those it starts; anything else starts over.
+async function typeHint($, c) {
+  const ch = await read($, chooseAtom)
+  if (!ch || ch.phase === 'confirm') return
+  const typed = ch.typed + c
+  const i = ch.labels.indexOf(typed)
+  if (i >= 0) return pickSentence($, i)
+  const narrows = ch.labels.some(l => l?.startsWith(typed))
+  await update($, chooseAtom, x => x && { ...x, typed: narrows ? typed : '' })
+}
+
+// The first sentence, then the last: the span is copied and the pane asks about highlighting it.
+async function pickSentence($, i) {
+  const ch = await read($, chooseAtom)
+  if (ch.phase === 'from') return update($, chooseAtom, x => x && { ...x, from: i, typed: '', phase: 'to' })
+  const msg = seen.get(ch.id)
+  const text = spanOf(msg.text, ch.from, i)
+  const frags = selectionFragments(text)
+  const copied = await $.ui.copy({ text }).catch(() => ({ isCopied: false }))
+  const removing = toggleFragments((await read($, hlAtom))[ch.id]?.frags ?? [], frags).removed
+  await update($, chooseAtom, x => x && {
+    ...x, to: i, typed: '', phase: 'confirm', frags, count: [...text.replace(/\s+/g, '')].length, isCopied: !!copied?.isCopied, removing,
+  })
+}
+
+// y: the span highlighted (or its highlight off); n: copied and nothing more.
+async function answerChoose($, yes) {
+  const ch = await read($, chooseAtom)
+  await closeChoose($)
+  if (!ch || !yes) return
+  const msg = seen.get(ch.id)
+  if (msg && ch.frags?.length) await toggleHighlight($, await strings($), ch.id, msg, ch.frags)
 }
 
 // ---- highlights -----------------------------------------------------------------
 
+// alt+y: the mouse selection lit (or its highlight off); with none made since the last alt+y, the
+// sentences of a reply picked by keys instead.
 async function highlight($) {
+  if ((await read($, pickAtom))?.purpose === 'highlight') return closePick($)
   await closePick($)
   const t = await strings($)
   const sel = await $.ui.selection()
-  if (!sel) return toast($, t.selectFirst)
+  const isNew = sel && !(lastSel && lastSel.text === sel.text && lastSel.requestId === sel.requestId)
+  if (!isNew) return putLetters($, 'highlight')
+  lastSel = { text: sel.text, requestId: sel.requestId }
   const msg = sel.requestId && seen.get(sel.requestId)
   if (!msg) return toast($, t.oneMessage)
   if (msg.kind !== 'assistant') return toast($, t.onlyReplies)
@@ -428,27 +569,81 @@ async function reveal($, p) {
 const what = p => (p.how === 'highlight' ? snippetOf(p.lit, 40) : p.snippet)
 const wordOf = (t, p) => ({ mark: t.markWord, highlight: t.highlightWord, auto: t.autoWord })[p.how]
 
+// The jump made: true; else a toast says why not.
 async function goTo($, p, n, total, wrap = '') {
   const t = await strings($)
   const moved = await reveal($, p)
-  if (moved?.deny) return toast($, t.cantScroll(moved.deny))
+  if (moved?.deny) {
+    toast($, t.cantScroll(moved.deny))
+    return false
+  }
   cursor = p.tid
   toast($, t.jumped(wordOf(t, p), n, total, wrap, what(p)))
+  return true
 }
 
-// alt+j / alt+k: the next or previous of every mark, highlight and auto mark.
+// alt+j / alt+k: the next or previous of every mark, highlight and auto mark, back to the first
+// past the last (and the other way); the bar shows where that is.
 async function jump($, dir) {
   await closePick($)
   const t = await strings($)
   const visible = visibleNow()
-  const { placed, pos } = await placedTargets($, visible, true)
+  const { placed, pos, rows } = await placedTargets($, visible, true)
   if (!placed.length) {
     const any = (await read($, marksAtom)).length || Object.keys(await read($, hlAtom)).length
     return toast($, any ? t.gone : t.noMarks)
   }
   const hop = jumpTarget(placed.map(p => ({ ...p, id: p.tid })), dir, startFrom(placed, visible, pos))
   const p = placed[hop.index]
-  await goTo($, p, hop.index + 1, placed.length, hop.wrapped ? (dir > 0 ? t.wrapFirst : t.wrapLast) : '')
+  if (await goTo($, p, hop.index + 1, placed.length, hop.wrapped ? (dir > 0 ? t.wrapFirst : t.wrapLast) : '')) {
+    await showBar($, placed, hop.index, rows)
+  }
+}
+
+// The bar above the prompt, for BAR_MS after the last jump: every stop where it lies in the
+// conversation, the one jumped to, and about the stretch the screen shows from there.
+async function showBar($, placed, index, rows) {
+  const geo = rowTops(rows, bodyColumns())
+  const stops = placed.map((p, i) => ({ at: fractionOf(p.pos, geo), how: p.how, isCurrent: i === index }))
+  const at = stops[index].at
+  await update($, barAtom, () => ({ stops, thumb: [at, Math.min(1, at + screen.rows / geo.total)], n: index + 1, total: placed.length }))
+  barTimer?.cancel()
+  try {
+    barTimer = $.clock.after(BAR_MS, () => {
+      barTimer = null
+      update($, barAtom, () => null).catch(() => undefined)
+    })
+  } catch {
+    // no timer: the bar goes with the next prompt instead
+    barTimer = null
+  }
+}
+
+// The bar's cells, joined into runs drawn alike.
+function drawBar($, e, bar, color) {
+  const { Box, Text } = $.ui.resolve(e)
+  const tail = ` ${bar.n}/${bar.total}`
+  const width = Math.max(10, (e.viewport?.columns ?? screen.columns) - tail.length - 2)
+  const kindOf = c => (c.isCurrent ? 'current' : c.how ?? (c.isThumb ? 'thumb' : 'line'))
+  const look = {
+    current: { backgroundColor: color, color: 'white', weight: 'bold' },
+    mark: { color: 'warning' },
+    highlight: { color: 'warning' },
+    auto: {},
+    thumb: {},
+    line: { dimColor: true },
+  }
+  const runs = []
+  for (const c of barCells(width, bar.stops, bar.thumb)) {
+    const kind = kindOf(c)
+    if (runs.length && runs[runs.length - 1].kind === kind) runs[runs.length - 1].text += c.ch
+    else runs.push({ kind, text: c.ch })
+  }
+  return Box({
+    key: 'chat-marks-bar',
+    flexDirection: 'row',
+    children: [...runs.map(r => Text({ ...look[r.kind], children: [r.text] })), Text({ dimColor: true, children: [tail] })],
+  })
 }
 
 // ---- the marks panel ------------------------------------------------------------
@@ -568,11 +763,13 @@ async function setLang($, arg) {
 
 // ---- hotkeys ------------------------------------------------------------------
 
-async function bindingsPath($) {
+async function configDir($) {
   const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
   const dir = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${home}/.claude`
-  return `${dir.replace(/\\/g, '/')}/keybindings.json`
+  return dir.replace(/\\/g, '/')
 }
+
+const bindingsPath = async $ => `${await configDir($)}/keybindings.json`
 
 // keybindings.json as an object: {} when there is none, null when it is there and not JSON.
 async function readBindings($, path) {
@@ -721,13 +918,14 @@ async function registerCommands($) {
 // The row above a message. While alt+m's letters are up: its letter, amber, or red with "unmark?"
 // beside it when the message is marked already. Otherwise `◆ mark` on a marked one, which a click
 // takes off (the pointer over it says so), or a dim `◇` on an auto mark. Null for none.
-function headLine($, e, t, color, label, isMarked, isAuto) {
+// `unmarks`: the letter takes a mark off (alt+m's, over a marked message).
+function headLine($, e, t, color, label, isMarked, isAuto, unmarks = isMarked) {
   if (!label && !isMarked && !isAuto) return null
   const { Box, Button, Text } = $.ui.resolve(e)
   const parts = []
   if (label) {
-    parts.push(Text({ backgroundColor: isMarked ? UNMARK_COLOR : color, color: 'white', weight: 'bold', children: [` ${label} `] }))
-    if (isMarked) parts.push(Text({ color: 'error', children: [' ' + t.unmarkPrefix.trim()] }))
+    parts.push(Text({ backgroundColor: unmarks ? UNMARK_COLOR : color, color: 'white', weight: 'bold', children: [` ${label} `] }))
+    if (unmarks) parts.push(Text({ color: 'error', children: [' ' + t.unmarkPrefix.trim()] }))
   } else if (!isMarked) {
     parts.push(Text({ dimColor: true, children: ['◇'] }))
   } else {
@@ -744,12 +942,14 @@ function headLine($, e, t, color, label, isMarked, isAuto) {
 }
 
 function runStyle(r, code, color) {
+  if (r.hint) return { backgroundColor: color, color: 'white', weight: 'bold' }
   const s = {}
   if (r.bold) s.weight = 'bold'
   if (r.italic) s.italic = true
   if (r.link) s.underline = true
   if (r.code || code) s.color = 'permission'
   if (r.hl) Object.assign(s, { backgroundColor: color, color: 'white' })
+  if (r.sel) Object.assign(s, { backgroundColor: SELECT_COLOR, color: 'white' })
   return s
 }
 
@@ -774,6 +974,8 @@ function drawReply($, e, t, parts, head, color) {
         children: [Box({ width: hang, flexShrink: 0, children: [runsText(marker)] }), Box({ flexShrink: 1, children: [runsText(rest)] })],
       })
     })
+    // a block drawn for picking sentences has no highlight of its own to take off
+    if (!p.frags?.length) return Box({ key: blockKey(e.requestId, i), flexDirection: 'column', children: lines })
     return Box({
       key: blockKey(e.requestId, i),
       flexDirection: 'column',
@@ -827,7 +1029,18 @@ async function headFor($, e, t, kind) {
   const n = pick ? pick.items.findIndex(isRow(e, kind)) : -1
   const key = keyOf(e.props.text)
   const isAuto = kind === 'assistant' && auto.some(a => a.id === e.requestId || keysMeet(a.key, key))
-  return headLine($, e, t, color, n >= 0 ? letters[n] : null, marks.some(isRow(e, kind)), isAuto)
+  const isMarked = marks.some(isRow(e, kind))
+  return headLine($, e, t, color, n >= 0 ? letters[n] : null, isMarked, isAuto, isMarked && pick?.purpose !== 'highlight')
+}
+
+// The reply whose sentences are being picked: every block with its hints (narrowed to those the
+// letters typed start) and the span chosen so far. Null for any other row.
+async function chooseParts($, e) {
+  const ch = await read($, chooseAtom)
+  if (!ch || !(ch.id === e.requestId || keysMeet(ch.key, keyOf(e.props.text)))) return null
+  const labels = ch.phase === 'confirm' ? [] : ch.labels.map(l => (l?.startsWith(ch.typed) ? l : undefined))
+  const frags = (await read($, hlAtom))[ch.id]?.frags ?? []
+  return pickLayout(e.props.text, frags, { labels, from: ch.from, to: ch.to })
 }
 
 function withHead($, e, head, theirs) {
@@ -1054,17 +1267,30 @@ export function register(on) {
   // A turn of the conversation's own (not an agent's) ended: its long replies become auto marks.
   on('turn.complete', async ($, e, next) => {
     const done = await next(e)
-    if (!e.agentId) await refreshAuto($)
+    if (!e.agentId) {
+      // the transcript file has grown: what was not in it may be now
+      unfound.clear()
+      await refreshAuto($)
+    }
     return done
   })
 
   on('prompt.submit', async ($, e, next) => {
     await closePick($)
+    await closeChoose($)
+    lastSel = null
+    await update($, barAtom, () => null)
     return next(e)
   })
 
   on('ui.close', { id: PICK_PANE }, async ($, e, next) => {
     await update($, pickAtom, () => null)
+    return next(e)
+  })
+
+  // Escape (or the close mark) while picking sentences: nothing more is done.
+  on('ui.close', { id: CHOOSE_PANE }, async ($, e, next) => {
+    await update($, chooseAtom, () => null)
     return next(e)
   })
 
@@ -1125,32 +1351,77 @@ export function register(on) {
     remember(e, 'assistant')
     const t = await strings($)
     const head = await headFor($, e, t, 'assistant')
+    const picking = e.props.isSummary ? null : await chooseParts($, e)
+    if (picking) return drawReply($, e, t, picking, head, await read($, colorAtom))
     const frags = (await read($, hlAtom))[e.requestId]?.frags
     const parts = frags && !e.props.isSummary ? layout(e.props.text, frags) : null
     if (parts) return drawReply($, e, t, parts, head, await read($, colorAtom))
     return withHead($, e, head, await next(e))
   })
 
-  // alt+m's letters: one per message on screen, the same letter over the message itself.
+  // alt+m's letters (and alt+y's, picking a reply): one per message offered, the same letter over
+  // the message itself.
   on('ui.render', { component: 'Pane', requestId: PICK_PANE }, async ($, e) => {
     const { Box, Button, Text } = $.ui.resolve(e)
     const t = await strings($)
     const pickState = await read($, pickAtom)
+    const isMarking = pickState?.purpose !== 'highlight'
     const marks = await read($, marksAtom)
     const room = Math.max(16, e.props.bodyColumns - 14)
     const rows = (pickState?.items ?? []).map((it, i) => {
-      const isMarked = marks.some(m => m.id === it.id)
+      const isMarked = isMarking && marks.some(m => m.id === it.id)
       const text = `[${it.kind === 'user' ? t.you : 'Claude'}] ${snippetOf(it.snippet, room)}`
       return Button({
         key: `${PICK_PANE}-${i}`,
         hotkey: letters[i],
         plain: true,
         label: (isMarked ? t.unmarkPrefix : '') + text,
-        onPress: safe($, () => toggleMarkOn($, it)),
+        onPress: safe($, () => (isMarking ? toggleMarkOn($, it) : startChoose($, it))),
         children: isMarked ? [Text({ color: 'error', children: [t.unmarkPrefix] }), Text({ children: [text] })] : [text],
       })
     })
-    return Box({ flexDirection: 'column', children: [Text({ dimColor: true, children: [t.pickHint] }), ...rows] })
+    return Box({ flexDirection: 'column', children: [Text({ dimColor: true, children: [isMarking ? t.pickHint : t.hlPickHint] }), ...rows] })
+  })
+
+  // alt+y's sentences: what to press now, and (hidden) a button for each letter that goes on a
+  // hint; then the copy's word and y / n.
+  on('ui.render', { component: 'Pane', requestId: CHOOSE_PANE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const t = await strings($)
+    const ch = await read($, chooseAtom)
+    if (!ch) return Box({ children: [] })
+    if (ch.phase === 'confirm') {
+      const yn = (key, hotkey, label, yes) => Button({ key, hotkey, label, onPress: safe($, () => answerChoose($, yes)) })
+      return Box({
+        flexDirection: 'column',
+        children: [
+          Text({ children: [(ch.isCopied ? t.copied(ch.count) : t.notCopied) + ' ' + (ch.removing ? t.askUnhighlight : t.askHighlight)] }),
+          Box({ flexDirection: 'row', gap: 2, children: [yn('chat-marks-choose-yes', 'y', t.yes, true), yn('chat-marks-choose-no', 'n', t.no, false)] }),
+        ],
+      })
+    }
+    const next = [...new Set(ch.labels.filter(l => l?.startsWith(ch.typed)).map(l => l[ch.typed.length]))]
+    const keys = next.map(c => Button({ key: 'chat-marks-hint-' + c, label: c, hotkey: c, onPress: safe($, () => typeHint($, c)) }))
+    const msg = seen.get(ch.id)
+    const from = ch.from == null || !msg ? '' : snippetOf(spanOf(msg.text, ch.from, ch.from), 30)
+    return Box({
+      flexDirection: 'column',
+      children: [
+        Text({ children: [ch.phase === 'from' ? t.chooseFrom : t.chooseTo(from)] }),
+        Text({ dimColor: true, children: [ch.typed ? t.typedSoFar(ch.typed) : t.chooseHint] }),
+        Box({ display: 'none', children: keys }),
+      ],
+    })
+  })
+
+  // The bar after a jump, in the band above the prompt.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const bar = await read($, barAtom)
+    if (!bar || e.surface !== 'terminal') return next(e)
+    const theirs = await next(e)
+    const mine = drawBar($, e, bar, await read($, colorAtom))
+    const { Box } = $.ui.resolve(e)
+    return theirs ? Box({ flexDirection: 'column', children: [theirs, mine] }) : mine
   })
 
   // The panel: its tabs (1 marks, 2 hotkeys), then the tab shown.

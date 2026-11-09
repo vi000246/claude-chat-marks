@@ -2,7 +2,9 @@
 //   - where a highlight lands in a reply, and how to split the reply so those blocks are drawn
 //     with a yellow background while the rest stays the engine's own Markdown
 //   - where messages sit in the conversation, and which mark alt+j / alt+k goes to
-//   - which replies are long enough to be marked by themselves
+//   - which replies are long enough to be marked by themselves, and where things sit on the bar
+//     alt+j / alt+k show
+//   - a reply cut into sentences, each with a hint to type, for highlighting by keys
 
 // Table borders count as space, so a selected table row (drawn with │) still matches the source.
 const SPACE = /[\s│┃|]/
@@ -144,10 +146,8 @@ export function blockSegments(lines, b) {
   return segs
 }
 
-// The pieces split where a fragment starts and ends, `hl` on the lit ones, and the fragments found;
-// null when none matched.
-export function highlightRuns(segs, frags) {
-  const plain = segs.map(s => s.text).join('')
+// Which characters of a block's text the fragments light (lit[i] 1), and the fragments found.
+function litMask(plain, frags) {
   const { out, map } = normMap(plain)
   const lit = new Uint8Array(plain.length)
   const hits = []
@@ -158,6 +158,14 @@ export function highlightRuns(segs, frags) {
       for (let k = map[i]; k <= map[i + f.length - 1]; k++) lit[k] = 1
     }
   }
+  return { lit, hits }
+}
+
+// The pieces split where a fragment starts and ends, `hl` on the lit ones, and the fragments found;
+// null when none matched.
+export function highlightRuns(segs, frags) {
+  const plain = segs.map(s => s.text).join('')
+  const { lit, hits } = litMask(plain, frags)
   if (!hits.length) return null
   const runs = []
   let at = 0
@@ -358,4 +366,169 @@ export function autoMarks(rows, { columns, minRows, gap }) {
     y += tall + (r.toolUses?.length ?? 0)
   })
   return out
+}
+
+// Where each message's top is, in rows from the conversation's start, reckoned as autoMarks does,
+// and how tall the whole is. rows: $.session.messages().
+export function rowTops(rows, columns) {
+  const tops = []
+  let y = 0
+  for (const r of rows) {
+    tops.push(y)
+    y += (r.text ? rowsOf(r.text, columns) : 0) + (r.toolUses?.length ?? 0)
+  }
+  return { tops, total: Math.max(1, y) }
+}
+
+// How far down the conversation a position (positions(): a message's index plus a fraction of it)
+// lies, from 0 to 1.
+export function fractionOf(pos, { tops, total }) {
+  const i = Math.min(tops.length - 1, Math.max(0, Math.floor(pos)))
+  const next = i + 1 < tops.length ? tops[i + 1] : total
+  return Math.min(1, (tops[i] + (pos - i) * (next - tops[i])) / total)
+}
+
+const RANK = { auto: 1, highlight: 2, mark: 3 }
+
+// The bar alt+j / alt+k show, `width` cells across: the stops at their places (`how` each, the
+// one jumped to `current`), and `thumb` (from, to: fractions) the stretch on screen.
+// [{ ch, how, isCurrent, isThumb }]
+export function barCells(width, stops, thumb) {
+  const cell = f => Math.min(width - 1, Math.max(0, Math.round(f * (width - 1))))
+  const cells = Array.from({ length: width }, (_, i) => ({ ch: '─', how: null, isCurrent: false, isThumb: false, i }))
+  const [a, b] = [cell(thumb[0]), cell(Math.max(thumb[0], thumb[1]))]
+  for (let i = a; i <= b; i++) Object.assign(cells[i], { ch: '━', isThumb: true })
+  for (const s of stops) {
+    const c = cells[cell(s.at)]
+    if (c.isCurrent || (c.how && RANK[c.how] >= RANK[s.how] && !s.isCurrent)) continue
+    Object.assign(c, { ch: { auto: '◇', mark: '◆', highlight: '■' }[s.how], how: s.how, isCurrent: !!s.isCurrent })
+  }
+  return cells.map(({ i, ...c }) => c)
+}
+
+// ---- sentences, for highlighting by keys ---------------------------------------------
+
+const STOP = /[。！？!?]/
+const CLOSER = /[」』）)"'”’\]]/
+
+// A reply cut into what a hint picks: a sentence (up to 。！？!? or a full stop before a space), a
+// line of a code block or a table, each line of anything else at least.
+// { blocks: [{ segs, code, text }], units: [{ block, start, end, line }] }: start / end in the
+// block's text (blockSegments joined), line the source line it starts on.
+export function sentencesOf(md) {
+  const lines = (md || '').split('\n')
+  const blocks = []
+  const units = []
+  for (const b of splitBlocks(lines)) {
+    const segs = blockSegments(lines, b)
+    const text = segs.map(s => s.text).join('')
+    const block = blocks.length
+    blocks.push({ segs, code: b.fence, text })
+    let from = 0
+    let line = b.start + (b.fence ? 1 : 0)
+    const cut = to => {
+      const piece = text.slice(from, to)
+      const body = piece.trim()
+      const lead = piece.length - piece.trimStart().length
+      if (body) units.push({ block, start: from + lead, end: from + lead + body.length, line })
+      from = to
+    }
+    for (let i = 0; i < text.length; i++) {
+      if (text[i] === '\n') {
+        cut(i)
+        from = i + 1
+        line++
+        continue
+      }
+      const head = text.slice(text.lastIndexOf('\n', i - 1) + 1, i)
+      if (b.fence || head.trimStart().startsWith('|')) continue
+      const c = text[i]
+      // a list's `1.` is no sentence
+      const ends = STOP.test(c) || (c === '.' && !/^\s*\d+$/.test(head) && (i + 1 === text.length || /\s/.test(text[i + 1])))
+      if (!ends) continue
+      let j = i + 1
+      while (j < text.length && CLOSER.test(text[j])) j++
+      cut(j)
+      i = j - 1
+    }
+    cut(text.length)
+  }
+  return { blocks, units }
+}
+
+// Labels for n hints, the first ones a single letter while enough letters are left over as the
+// first of two: no label starts another, so each typed letter either is one or narrows them.
+export function hintLabels(n, alphabet) {
+  const L = alphabet.length
+  if (n <= L) return [...alphabet].slice(0, n)
+  let singles = L
+  while (singles > 0 && singles + (L - singles) * L < n) singles--
+  const out = [...alphabet].slice(0, singles)
+  for (const p of alphabet.slice(singles)) for (const q of alphabet) out.push(p + q)
+  return out.slice(0, n)
+}
+
+// The units in the order hints go to them: those whose line shows (view: the message's
+// onScreen) first, so they get the single letters, then the rest, each in reading order.
+export function hintOrder(md, units, columns, view) {
+  const top = []
+  let y = 1
+  for (const l of (md || '').split('\n')) {
+    top.push(y)
+    y += Math.max(1, Math.ceil(cellsOf(l) / Math.max(20, columns)))
+  }
+  const shows = u => !!view && top[u.line] >= view.first && top[u.line] <= view.last
+  const all = units.map((_, i) => i)
+  return [...all.filter(i => shows(units[i])), ...all.filter(i => !shows(units[i]))]
+}
+
+// A block's pieces split where a hint goes in (hints: offset -> label, drawn before that
+// character as a run of its own, `hint`), where a highlight (`lit`) and the selection (`sel`:
+// [from, to) offsets) start and end.
+export function paintRuns(segs, { lit = null, sel = null, hints = new Map() }) {
+  const runs = []
+  const flags = k => `${lit?.[k] === 1 ? 1 : 0}${sel && k >= sel[0] && k < sel[1] ? 1 : 0}`
+  let at = 0
+  for (const { text, ...style } of segs) {
+    for (let i = 0; i < text.length;) {
+      if (hints.has(at + i)) runs.push({ text: hints.get(at + i), hint: true })
+      const f = flags(at + i)
+      let j = i + 1
+      while (j < text.length && !hints.has(at + j) && flags(at + j) === f) j++
+      runs.push({ ...style, text: text.slice(i, j), hl: f[0] === '1', ...(f[1] === '1' ? { sel: true } : {}) })
+      i = j
+    }
+    at += text.length
+  }
+  return runs
+}
+
+// A reply drawn for picking sentences: every block as runs, a hint before each unit that has a
+// label, the units from..to (indexes; to null: from alone) selected, `frags` lit as ever.
+// [{ type: 'runs', runs, code, frags: [] }], as layout() gives.
+export function pickLayout(md, frags, { labels = [], from = null, to = null }) {
+  const { blocks, units } = sentencesOf(md)
+  const [lo, hi] = from == null ? [null, null] : [Math.min(from, to ?? from), Math.max(from, to ?? from)]
+  return blocks.map((b, bi) => {
+    const hints = new Map()
+    units.forEach((u, i) => {
+      if (u.block === bi && labels[i]) hints.set(u.start, labels[i])
+    })
+    const chosen = lo == null ? [] : units.slice(lo, hi + 1).filter(u => u.block === bi)
+    const sel = chosen.length ? [chosen[0].start, chosen[chosen.length - 1].end] : null
+    const lit = frags?.length ? litMask(b.text, frags).lit : null
+    return { type: 'runs', runs: paintRuns(b.segs, { lit, sel, hints }), code: b.code, frags: [] }
+  })
+}
+
+// The text of units a..b as a copy takes it: each block's stretch, blocks apart by a blank line.
+export function spanOf(md, a, b) {
+  const { blocks, units } = sentencesOf(md)
+  const picked = units.slice(Math.min(a, b), Math.max(a, b) + 1)
+  const parts = []
+  for (const bi of new Set(picked.map(u => u.block))) {
+    const us = picked.filter(u => u.block === bi)
+    parts.push(blocks[bi].text.slice(us[0].start, us[us.length - 1].end))
+  }
+  return parts.join('\n\n')
 }
