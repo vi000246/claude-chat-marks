@@ -28,6 +28,7 @@ declare module 'claude-code' {
         armed?: string | null
         mods?: { ctrl?: boolean; alt?: boolean; shift?: boolean }
         letter?: string
+        rows?: string
         pending: { slot: string; chord: string } | null
         note: string | null
         tone: 'ok' | 'warn' | 'error' | null

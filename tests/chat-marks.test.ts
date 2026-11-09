@@ -347,8 +347,8 @@ test('the hotkeys editor: modifier toggles and a letter field, saved into keybin
   const json = () => JSON.parse(files.get(KEYFILE)!)
   const global = () => json().bindings.find((b: any) => b.context === 'Global').bindings
 
-  // a row picked opens its editor, alt ticked for a row with no key yet
-  expect((await keys.find({ key: 'chat-marks-key-row-mark' }))?.props.hotkey).toBe('a')
+  // a row picked opens its editor, alt ticked for a row with no key yet (`a` is the height row's)
+  expect((await keys.find({ key: 'chat-marks-key-row-mark' }))?.props.hotkey).toBe('s')
   // each row says what its key does
   expect(await keys.find({ type: 'Text', text: /Jump to the next long reply, mark or highlight/ })).toBeDefined()
   await keys.press({ key: 'chat-marks-key-row-mark' })
@@ -482,6 +482,37 @@ test('/mark auto off takes the ◇ away, a height brings it back', async ($, on)
   expect(await report.find({ type: 'Text', text: '◇' })).toBeUndefined()
   await $.command.run({ command: 'mark', args: 'auto 10' })
   expect(await report.find({ type: 'Text', text: '◇' })).toBeDefined()
+})
+
+test('the settings tab shows the long-reply height and changes it', async ($, on) => {
+  const rows = [{ role: 'assistant', text: long('長報告'), toolUses: [] }]
+  stub(on, { rows })
+  const report = await $.ui.mount(reply('r1', long('長報告'), { first: 0, last: 14, of: 15 }))
+  await turnEnds($)
+  await $.command.run({ command: 'mark', args: 'settings' })
+  const panel = await $.ui.mount(pane('chat-marks'))
+  expect((await panel.find({ key: 'chat-marks-tab-keys' }))?.props.label).toBe('Settings')
+  const row = await panel.find({ key: 'chat-marks-key-row-auto' })
+  expect(row?.props.hotkey).toBe('a')
+  expect(row?.text).toMatch(/Long reply height\s+12 rows/)
+
+  // typed and Enter: taller than this reply, so its ◇ goes
+  await panel.press({ key: 'chat-marks-key-row-auto' })
+  expect(await panel.find({ type: 'Text', text: 'Editing: Long reply height' })).toBeDefined()
+  await panel.input({ key: 'chat-marks-auto-rows', text: '2x0', kind: 'change' })
+  expect(await panel.find({ type: 'Text', text: 'Saves as: 20 rows' })).toBeDefined()
+  await panel.input({ key: 'chat-marks-auto-rows', text: '20' })
+  expect(await panel.find({ type: 'Text', text: 'Long reply height: 20 rows' })).toBeDefined()
+  expect(await report.find({ type: 'Text', text: '◇' })).toBeUndefined()
+
+  await panel.press({ key: 'chat-marks-key-row-auto' })
+  await panel.press({ key: 'chat-marks-auto-default' })
+  expect(await report.find({ type: 'Text', text: '◇' })).toBeDefined()
+  await panel.press({ key: 'chat-marks-key-row-auto' })
+  await panel.press({ key: 'chat-marks-auto-off' })
+  expect(await panel.find({ type: 'Text', text: 'Long reply height: off' })).toBeDefined()
+  expect(await report.find({ type: 'Text', text: '◇' })).toBeUndefined()
+  expect((await $.command.run({ command: 'mark', args: 'auto' })).text).toMatch(/No reply is marked by itself/)
 })
 
 test('/mark-clear takes every mark and highlight off', async ($, on) => {

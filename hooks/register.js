@@ -11,8 +11,9 @@
 //                   j / k move the cursor and show the conversation there, a letter or Enter jumps
 //                   and closes, Escape closes and goes back to where it was opened; x deletes; 0
 //                   twice: all
-//          hotkeys  click a box, press the keys, saved (/mark keys opens here; the chords above are
-//                   only what this author picked: the mod binds nothing until someone sets them)
+//          settings the long-reply height, then the hotkeys: click a row, type, saved (/mark keys
+//                   opens here; the chords above are only what this author picked: the mod binds
+//                   nothing until someone sets them)
 //   /mark next|prev|add|hl [words]|auto <rows>|off|on|color <#rrggbb>|lang en|zh
 //   /mark-clear  every mark and highlight of this session gone (auto marks are not the person's)
 //
@@ -38,7 +39,8 @@
 //   pick        { items: [{ id, kind, key, snippet }] } while alt+m's letters are up, else null
 //   panel       { tab, mode: 'jump' | 'delete', cursor: <target id>, origin, confirmClear } while
 //               the panel is up; origin: where Escape scrolls back to
-//   keys        { pending: { slot, chord } | null, note, tone } while the panel is up
+//   keys        { armed, mods, letter, rows, pending: { slot, chord } | null, note, tone } while the
+//               panel is up: the settings row being edited and what its editor holds
 //   color, lang the highlight's background; the language spoken (strings.mjs)
 // $.store:
 //   s:<sessionId>  { marks, highlights, auto, at }, so a resumed session gets them back; the newest
@@ -62,7 +64,9 @@ const ACTIONS = {
   highlight: 'diff:nextSource',
   panel: 'diff:previousSource',
 }
-// the rows of the hotkeys panel: the chords kept in keybindings.json, then the panel's own keys
+// the rows of the settings tab: the long-reply height, the chords kept in keybindings.json, then
+// the panel's own keys
+const SETTING_SLOTS = ['auto']
 const GLOBAL_SLOTS = ['mark', 'next', 'prev', 'highlight', 'panel']
 const PANEL_SLOTS = ['down', 'up', 'remove']
 const DEFAULT_PANEL_KEYS = { down: 'j', up: 'k', remove: 'x' }
@@ -261,13 +265,18 @@ async function refreshAuto($) {
   return next
 }
 
-// /mark auto <rows> | on | off, for every session; no argument says how it is now.
+// A new long-reply height for every session (0: none is marked by itself), held at once here.
+async function storeAuto($, n) {
+  await $.store.set('cfg', { ...(await config($)), auto: n })
+  await refreshAuto($)
+}
+
+// /mark auto <rows> | on | off; no argument says how it is now.
 async function setAuto($, arg) {
   const t = await strings($)
   const n = arg === 'off' ? 0 : arg === 'on' ? DEFAULT_AUTO_ROWS : Number(arg)
   if (!arg || !Number.isInteger(n) || n < 0) return t.autoNow(await autoRows($))
-  await $.store.set('cfg', { ...(await config($)), auto: n })
-  await refreshAuto($)
+  await storeAuto($, n)
   return n ? t.autoSet(n) : t.autoOff
 }
 
@@ -589,16 +598,25 @@ function describe(t, user) {
   return user.key ? t.yourBinding(user.action) : t.claudeAction(user.action)
 }
 
-// The hotkeys tab edits one row at a time: ctrl / alt / shift toggles and a one-letter field, then
-// Save (or Enter in the field). A pane's keys carry no modifiers, so the modifiers are chosen, not
-// pressed; everything is reachable from the keyboard (Tab, Enter, typing) as well as by a click.
+// The settings tab edits one row at a time. A hotkey: ctrl / alt / shift toggles and a one-letter
+// field, then Save (or Enter in the field). A pane's keys carry no modifiers, so the modifiers are
+// chosen, not pressed; everything is reachable from the keyboard (Tab, Enter, typing) as well as by
+// a click. The long-reply height: a field of digits, then Save, Off or Default.
 
 const MODS = ['ctrl', 'alt', 'shift']
 const LETTER = 'chat-marks-key-letter'
+const ROWS_FIELD = 'chat-marks-auto-rows'
 
 // A row picked for editing: its chord as it is now in the toggles and the field (alt, for a row
-// with none), the field holding the keyboard.
+// with none), or the height as it is now, the field holding the keyboard.
 async function armSlot($, slot) {
+  if (SETTING_SLOTS.includes(slot)) {
+    const rows = String(await autoRows($))
+    await update($, keysAtom, k => ({ ...(k ?? {}), armed: slot, mods: {}, rows, pending: null, note: null, tone: null }))
+    await $.ui.focus({ requestId: PANEL, key: ROWS_FIELD }).catch(() => undefined)
+    await $.ui.scroll({ in: PANEL, to: 'start' }).catch(() => undefined)
+    return
+  }
   const doc = GLOBAL_SLOTS.includes(slot) ? await readBindings($, await bindingsPath($)) : null
   const chord = PANEL_SLOTS.includes(slot) ? keys[slot] : doc && chordFor(doc, ACTIONS[slot])
   const parts = chord ? chord.split('+') : []
@@ -618,6 +636,19 @@ const letterOf = value => {
 }
 
 const chordOfEdit = state => canon([...MODS.filter(m => state.mods?.[m]), state.letter].join('+'))
+
+// The height field keeps up to three digits.
+const digitsOf = value => String(value ?? '').replace(/\D/g, '').slice(0, 3)
+
+// Save on the height row: the field's number (0: off), or `n` from its Off / Default buttons.
+async function saveRows($, n) {
+  const t = await strings($)
+  const typed = (await read($, keysAtom))?.rows ?? ''
+  const rows = n ?? (typed === '' ? null : Number(typed))
+  if (rows == null) return note($, t.needRows, 'error')
+  await storeAuto($, rows)
+  await disarm($, t.saved(t.slots.auto, rows ? t.rowsValue(rows) : t.autoOffValue), 'ok')
+}
 
 // Save: a chord into keybindings.json, or a key of the panel's own.
 async function saveKey($) {
@@ -869,14 +900,19 @@ async function drawMarksTab($, e, t, panel) {
   ]
 }
 
-// The hotkeys tab: a row per action with the chord it has now; under the rows, while one is picked,
-// its editor: the modifier toggles, the letter field, Save / Clear / Cancel, and what Save writes.
+// The settings tab: the long-reply height, then a row per action with the chord it has now; above
+// the rows, while one is picked, its editor: the modifier toggles and the letter field (or the
+// height field), its buttons, and what Save writes.
 async function drawKeysTab($, e, t) {
   const { Box, Button, Input, Text } = $.ui.resolve(e)
   const state = await read($, keysAtom)
   const doc = await readBindings($, await bindingsPath($))
-  const slots = [...GLOBAL_SLOTS, ...PANEL_SLOTS]
-  const current = slot => (PANEL_SLOTS.includes(slot) ? keys[slot] : doc && chordFor(doc, ACTIONS[slot])) || ''
+  const height = await autoRows($)
+  const slots = [...SETTING_SLOTS, ...GLOBAL_SLOTS, ...PANEL_SLOTS]
+  const current = slot => {
+    if (slot === 'auto') return height ? t.rowsValue(height) : t.autoOffValue
+    return (PANEL_SLOTS.includes(slot) ? keys[slot] : doc && chordFor(doc, ACTIONS[slot])) || ''
+  }
   const armed = state?.armed ?? null
   // a row: the action and its chord, and under it, dim, what the chord does
   const row = (slot, i) => Box({
@@ -907,7 +943,42 @@ async function drawKeysTab($, e, t) {
     onPress: safe($, () => update($, keysAtom, k => k && { ...k, mods: { ...k.mods, [mod]: !k.mods?.[mod] }, pending: null })),
   })
   const action = (key, label, fn) => Button({ key, label, onPress: safe($, fn) })
-  const editor = armed
+  const typed = state?.rows ?? ''
+  const rowsEditor = () => Box({
+    flexDirection: 'column',
+    borderStyle: 'round',
+    paddingX: 1,
+    children: [
+      Text({ weight: 'bold', children: [t.editing(t.slots.auto)] }),
+      Input({
+        key: ROWS_FIELD,
+        label: t.rowsLabel,
+        value: typed,
+        placeholder: String(DEFAULT_AUTO_ROWS),
+        submitLabel: t.save,
+        autoFocus: true,
+        onInput: value => update($, keysAtom, k => k && { ...k, rows: digitsOf(value) }),
+        onSubmit: safe($, async value => {
+          await update($, keysAtom, k => k && { ...k, rows: digitsOf(value) || k.rows })
+          await saveRows($)
+        }),
+      }),
+      Box({
+        flexDirection: 'row',
+        gap: 2,
+        children: [
+          action('chat-marks-auto-save', t.save, () => saveRows($)),
+          action('chat-marks-auto-off', t.turnOff, () => saveRows($, 0)),
+          action('chat-marks-auto-default', t.resetKey, () => saveRows($, DEFAULT_AUTO_ROWS)),
+          action('chat-marks-key-cancel', t.cancel, () => disarm($, null, null)),
+        ],
+      }),
+      Text({ dimColor: true, children: [t.willSave(typed === '' ? '—' : Number(typed) ? t.rowsValue(Number(typed)) : t.autoOffValue)] }),
+    ],
+  })
+  const editor = SETTING_SLOTS.includes(armed)
+    ? rowsEditor()
+    : armed
     ? Box({
         flexDirection: 'column',
         borderStyle: 'round',
@@ -954,6 +1025,7 @@ async function drawKeysTab($, e, t) {
     Text({ dimColor: true, children: [t.keysHint] }),
     ...(editor ? [editor] : []),
     ...(state?.note ? [Text({ ...(tone ? { color: tone } : {}), children: [state.note] })] : []),
+    Box({ flexDirection: 'column', gap: 1, children: SETTING_SLOTS.map(s => row(s, slots.indexOf(s))) }),
     Box({ flexDirection: 'column', gap: 1, children: GLOBAL_SLOTS.map(s => row(s, slots.indexOf(s))) }),
     Box({ flexDirection: 'column', gap: 1, children: PANEL_SLOTS.map(s => row(s, slots.indexOf(s))) }),
   ]
@@ -1027,7 +1099,7 @@ export function register(on) {
     const [verb = '', ...rest] = e.args.trim().split(/\s+/)
     const arg = verb.toLowerCase()
     const value = (rest[0] ?? '').toLowerCase()
-    if (arg === 'keys') await openPanel($, 'keys')
+    if (arg === 'keys' || arg === 'settings') await openPanel($, 'keys')
     else if (arg === 'next' || arg === 'j') await jump($, 1)
     else if (arg === 'prev' || arg === 'k') await jump($, -1)
     else if (arg === 'add' || arg === 'm') await markKey($)
