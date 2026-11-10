@@ -78,6 +78,15 @@ A plugin cannot register keyboard shortcuts of its own. chat-marks borrows six C
 
 The keys inside the marks panel (`j`, `k`, `x` by default) are set in the same panel and kept by the plugin.
 
+## What it reads and writes
+
+- **Writes** `~/.claude/keybindings.json` (under `$CLAUDE_CONFIG_DIR` when that is set), and only when you save or clear a hotkey in the Settings tab: it adds or changes bindings in the `Global` context, and writes `null` for a Claude Code chord you chose to take over. It writes no other file.
+- **Reads** that file, to show your hotkeys and name them in the panes.
+- **Reads** the current session's transcript (`~/.claude/projects/<project>/<session id>.jsonl`), only to find the rows of long replies not drawn since a reload or a resume, so a jump can reach them. It keeps nothing from it but those row ids.
+- **Keeps** marks, highlights, those row ids and its settings in the plugin's own store, for the newest 40 sessions.
+- **Copies** to the clipboard only the span you pick when highlighting by keys.
+- Sends nothing over the network and runs no programs.
+
 ## Limits
 
 - **A reply's height is reckoned from its text** at the terminal's width, so after a resize an auto mark or two may move. A reply not drawn since the plugin loaded or the session was resumed may not be reachable until you scroll past it.
