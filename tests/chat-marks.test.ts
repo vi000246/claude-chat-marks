@@ -45,6 +45,7 @@ function stub(on: any, world: World) {
   const files = (world.files ??= new Map())
   const toasts: string[] = []
   const opened: string[] = []
+  const opens: any[] = []
   const closed: string[] = []
   on('store.get', ($: any, e: any) => ({ value: store.get(e.key) }))
   on('store.set', ($: any, e: any) => {
@@ -70,6 +71,7 @@ function stub(on: any, world: World) {
   })
   on('ui.open', ($: any, e: any) => {
     opened.push(e.id)
+    opens.push(e)
     return { value: { isPlaced: true } }
   })
   on('ui.close', ($: any, e: any) => {
@@ -97,7 +99,7 @@ function stub(on: any, world: World) {
     const { Text } = $.ui.resolve(e)
     return Text({ children: ['engine:' + (e.props.text ?? e.props.hint ?? '')] })
   })
-  return { store, toasts, opened, closed, files }
+  return { store, toasts, opened, opens, closed, files }
 }
 
 const lit = async (ui: any, color = AMBER) =>
@@ -204,7 +206,7 @@ test('one message drawn under two ids gets one letter', async ($, on) => {
   await hint.press({ key: 'chat-marks-mark' })
   expect(opened).toEqual(['chat-marks-pick'])
   const picker = await $.ui.mount(pane('chat-marks-pick'))
-  expect(await picker.findAll({ type: 'Button' })).toHaveLength(1)
+  expect((await picker.findAll({ type: 'Button' })).filter((b: any) => b.props.hotkey)).toHaveLength(1)
   // the letter goes on the row by its text, so whichever id is the one on screen carries it
   expect(await now.find({ type: 'Text', text: ' a ' })).toBeDefined()
   expect(await before.find({ type: 'Text', text: ' a ' })).toBeDefined()
@@ -467,7 +469,7 @@ test('alt+m puts letters on the long replies only while one is on screen', async
   const hint = await $.ui.mount(HINT)
   await hint.press({ key: 'chat-marks-mark' })
   const picker = await $.ui.mount(pane('chat-marks-pick'))
-  expect(await picker.findAll({ type: 'Button' })).toHaveLength(1)
+  expect((await picker.findAll({ type: 'Button' })).filter((b: any) => b.props.hotkey)).toHaveLength(1)
   expect(await l.find({ type: 'Text', text: ' a ' })).toBeDefined()
   expect(await q.find({ type: 'Text', text: ' a ' })).toBeUndefined()
   expect(await s.find({ type: 'Text', text: ' a ' })).toBeUndefined()
@@ -627,7 +629,8 @@ test('alt+y by keys: one letter and Enter find a character whose code is that le
   expect(await chooser.find({ type: 'Text', text: '2 places: type a hint' })).toBeDefined()
   expect(await hintsIn(msg)).toEqual(['a', 's'])
   // picking a hint, the same button is cancel
-  expect((await chooser.find({ key: 'chat-marks-choose-enter' }))?.props.label).toBe('Esc: cancel')
+  // (no keybindings.json here: the chord is named by its row)
+  expect((await chooser.find({ key: 'chat-marks-choose-enter' }))?.props.label).toBe('Highlight: cancel')
   await type(chooser, 's')
   expect(await selectedIn(msg)).toBe('四')
   await type(chooser, 'a')
@@ -672,6 +675,37 @@ test('an auto mark not drawn since a reload is found in the transcript file', as
   files.set('/home/me/.claude/projects/-work-proj/sess-1.jsonl', '{"type":"user"}\n' + JSON.stringify(line) + '\n')
   await turnEnds($)
   expect((store.get('s:sess-1') as any).auto.map((a: any) => a.id)).toEqual(['old-uuid'])
+})
+
+test('Escape closes none of the panes; each closes by the chord that opened it', async ($, on) => {
+  const text = long('一段長回應')
+  const { opens, closed, files } = stub(on, { rows: [{ role: 'assistant', text, toolUses: [] }] })
+  files.set(KEYFILE, JSON.stringify({ bindings: [{ context: 'Global', bindings: { 'alt+o': 'diff:previousSource', 'alt+y': 'diff:nextSource', 'alt+m': 'diff:back' } }] }))
+  await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
+  const hint = await $.ui.mount(HINT)
+
+  await hint.press({ key: 'chat-marks-panel' })
+  const panel = await $.ui.mount(pane('chat-marks'))
+  expect(await panel.find({ type: 'Text', text: /alt\+o: back to where you were|alt\+o closes/ })).toBeDefined()
+  await panel.press({ key: 'chat-marks-panel-close' })
+  expect(closed).toEqual(['chat-marks'])
+
+  await hint.press({ key: 'chat-marks-hl' })
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
+  await chooser.press({ key: 'chat-marks-choose-close' })
+  expect(closed.at(-1)).toBe('chat-marks-choose')
+
+  await hint.press({ key: 'chat-marks-mark' })
+  const picker = await $.ui.mount(pane('chat-marks-pick'))
+  expect(await picker.find({ type: 'Text', text: /alt\+m closes/ })).toBeDefined()
+  await picker.press({ key: 'chat-marks-pick-close' })
+  expect(closed.at(-1)).toBe('chat-marks-pick')
+
+  expect(opens.map(o => [o.id, o.closeOnEscape])).toEqual([
+    ['chat-marks', undefined],
+    ['chat-marks-choose', undefined],
+    ['chat-marks-pick', undefined],
+  ])
 })
 
 test('alt+u undoes the last change, again and again back', async ($, on) => {

@@ -15,7 +15,7 @@
 //   alt+o  the panel (also /mark), three tabs (1, 2, 3):
 //          marks    every mark and highlight in conversation order (no auto mark), a letter each;
 //                   j / k move the cursor and show the conversation there, a letter or Enter jumps
-//                   and closes, Escape closes and goes back to where it was opened; x deletes; 0
+//                   and closes, alt+o closes and goes back to where it was opened; x deletes; 0
 //                   twice: all
 //          settings the long-reply height, then the hotkeys: click a row, type, saved (/mark keys
 //                   opens here; the chords above are only what this author picked: the mod binds
@@ -48,7 +48,7 @@
 //               while alt+y picks a span by keys (see "highlighting by keys"), else null
 //   bar         { stops: [{ at, how, isCurrent }], thumb, n, total } while the bar shows
 //   panel       { tab, mode: 'jump' | 'delete', cursor: <target id>, origin, confirmClear } while
-//               the panel is up; origin: where Escape scrolls back to
+//               the panel is up; origin: where closing it scrolls back to
 //   keys        { armed, mods, letter, rows, pending: { slot, chord } | null, note, tone } while the
 //               panel is up: the settings row being edited and what its editor holds
 //   color, lang the highlight's background; the language spoken (strings.mjs)
@@ -425,7 +425,7 @@ async function markKey($) {
   const offered = shown.some(isLong) ? shown.filter(v => isLong(v) || isMarked(v)) : shown
   const items = offered.slice(0, letters.length).map(({ id, kind, key, snippet, preview }) => ({ id, kind, key, snippet, preview }))
   await update($, pickAtom, () => ({ items }))
-  await $.ui.open({ id: PICK_PANE, title: t.pickTitle, focus: true, closeOnEscape: true, rows: items.length + 2 })
+  await $.ui.open({ id: PICK_PANE, title: t.pickTitle, focus: true, rows: items.length + 2 })
 }
 
 // ---- highlighting by keys ---------------------------------------------------------------
@@ -495,7 +495,7 @@ async function startChoose($) {
   await update($, chooseAtom, () => ({ phase: 'start', search: true, typed: '', points: [], from: null, to: null, note: null }))
   // docked beside the conversation (fullscreen, from 110 columns) as narrow as a dock goes; inline
   // above the prompt, as short as its few lines: no plugin places a pane anywhere smaller
-  await $.ui.open({ id: CHOOSE_PANE, title: t.chooseTitle, focus: true, closeOnEscape: true, rows: 4, columns: 24 })
+  await $.ui.open({ id: CHOOSE_PANE, title: t.chooseTitle, focus: true, rows: 4, columns: 24 })
 }
 
 async function closeChoose($) {
@@ -809,7 +809,7 @@ async function openPanel($, tab) {
   const origin = originOf(visible, pos)
   await update($, panelAtom, () => ({ tab, mode: 'jump', cursor: start?.tid ?? null, origin, confirmClear: false }))
   await update($, keysAtom, () => ({ pending: null, note: null, tone: null }))
-  await $.ui.open({ id: PANEL, title: t.panelTitle, focus: true, closeOnEscape: true, columns: 64 })
+  await $.ui.open({ id: PANEL, title: t.panelTitle, focus: true, columns: 64 })
   // the entry the reader is at, in view with as little scrolling as shows it: the tabs and the
   // hint above it stay in sight whenever it fits under them
   if (start && tab === 'marks') {
@@ -817,7 +817,9 @@ async function openPanel($, tab) {
   }
 }
 
-// alt+o: the panel opens, or, open, closes as Escape closes it (back to where it was opened).
+// alt+o: the panel opens, or, open, closes (back to where it was opened). Escape does not close a
+// pane of this mod: an Escape meant for a pane that lands on the prompt stops Claude's turn, so each
+// pane closes by the chord that opened it (alt+o, alt+y, alt+m); Escape only hands the keys back.
 async function togglePanel($) {
   const panel = await read($, panelAtom)
   if (!panel) return openPanel($, 'marks')
@@ -863,7 +865,7 @@ async function deleteTarget($, p) {
 }
 
 // j / k: the cursor (the panel's focus ring) to the next or previous entry, kept in view, and the
-// conversation shown there as a preview: Escape goes back to where the panel was opened.
+// conversation shown there as a preview: alt+o goes back to where the panel was opened.
 async function moveCursor($, dir) {
   const panel = await read($, panelAtom)
   if (!panel) return
@@ -1053,6 +1055,12 @@ async function registerCommands($) {
 
 // ---- drawing ------------------------------------------------------------------
 
+// The chord a slot answers to now, for what the panes say: the person's, or the slot's name.
+async function chordText($, t, slot) {
+  const doc = await readBindings($, await bindingsPath($))
+  return (doc && chordFor(doc, ACTIONS[slot])) || t.slots[slot]
+}
+
 // The row above a message. While alt+m's letters are up: its letter, amber, or red with "unmark?"
 // beside it when the message is marked already. Otherwise `◆ mark` on a marked one, which a click
 // takes off (the pointer over it says so), or a dim `◇` on an auto mark. Null for none.
@@ -1223,7 +1231,8 @@ async function drawMarksTab($, e, t, panel) {
   const color = await read($, colorAtom)
   const { placed } = await placedTargets($)
   const isDeleting = panel?.mode === 'delete'
-  const hint = !placed.length ? t.panelEmpty : isDeleting ? t.panelDelete : t.panelJump
+  const key = await chordText($, t, 'panel')
+  const hint = !placed.length ? t.panelEmpty(key) : isDeleting ? t.panelDelete : t.panelJump(key)
   const hidden = Box({
     display: 'none',
     children: [
@@ -1384,7 +1393,9 @@ async function drawGuideTab($, e, t) {
   const { Box, Text } = $.ui.resolve(e)
   const doc = await readBindings($, await bindingsPath($))
   const chord = slot => (doc && chordFor(doc, ACTIONS[slot])) || t.notSet
-  const fill = line => line.replace(/\{(down|up|remove)\}/g, (_, k) => keys[k])
+  const fill = line => line
+    .replace(/\{(down|up|remove)\}/g, (_, k) => keys[k])
+    .replace(/\{(mark|highlight|panel)\}/g, (_, slot) => chord(slot))
   return t.guide.map((g, i) => Box({
     key: 'chat-marks-guide-' + i,
     flexDirection: 'column',
@@ -1448,13 +1459,13 @@ export function register(on) {
     return next(e)
   })
 
-  // Escape (or the close mark) while picking sentences: nothing more is done.
+  // alt+y (or the close mark, ctrl+x x) while picking sentences: nothing more is done.
   on('ui.close', { id: CHOOSE_PANE }, async ($, e, next) => {
     await update($, chooseAtom, () => null)
     return next(e)
   })
 
-  // Escape (or the close mark) with no jump made: back to where the panel was opened.
+  // The close mark or ctrl+x x with no jump made: back to where the panel was opened.
   on('ui.close', { id: PANEL }, async ($, e, next) => {
     const panel = await read($, panelAtom)
     await update($, panelAtom, () => null)
@@ -1542,7 +1553,13 @@ export function register(on) {
         children: isMarked ? [Text({ color: 'error', children: [t.unmarkPrefix] }), Text({ children: [text] })] : [text],
       })
     })
-    return Box({ flexDirection: 'column', children: [Text({ dimColor: true, children: [t.pickHint] }), ...rows] })
+    // alt+m again while the pane holds the keyboard: a pane's Button takes it first
+    const close = Box({
+      display: 'none',
+      children: [Button({ key: 'chat-marks-pick-close', label: 'close', action: ACTIONS.mark, onPress: safe($, () => closePick($)) })],
+    })
+    const hint = t.pickHint(await chordText($, t, 'mark'))
+    return Box({ flexDirection: 'column', children: [Text({ dimColor: true, children: [hint] }), ...rows, close] })
   })
 
   // alt+y by keys: what to type now and what is typed so far, a hidden Button per key, and at the
@@ -1554,7 +1571,11 @@ export function register(on) {
     if (!ch) return Box({ children: [] })
     const keyButtons = Box({
       display: 'none',
-      children: [...CHOOSE_KEYS].map(c => Button({ key: chooseKey(c), label: c, hotkey: c, onPress: safe($, () => keyChoose($, c)) })),
+      children: [
+        ...[...CHOOSE_KEYS].map(c => Button({ key: chooseKey(c), label: c, hotkey: c, onPress: safe($, () => keyChoose($, c)) })),
+        // alt+y again while the pane holds the keyboard closes it
+        Button({ key: 'chat-marks-choose-close', label: 'close', action: ACTIONS.highlight, onPress: safe($, () => closeChoose($)) }),
+      ],
     })
     let focusLine = []
     if (e.props.isFocused === false) {
@@ -1594,7 +1615,7 @@ export function register(on) {
         Text({ children: [say] }),
         Text({ weight: 'bold', children: ['> ' + ch.typed] }),
         ...(ch.note ? [Text({ color: 'warning', children: [ch.note] })] : []),
-        ch.search ? enter(t.enterOne, () => enterChoose($)) : enter(t.cancelEsc, () => closeChoose($)),
+        ch.search ? enter(t.enterOne, () => enterChoose($)) : enter(t.closeKey(await chordText($, t, 'highlight')), () => closeChoose($)),
         keyButtons,
       ],
     })
