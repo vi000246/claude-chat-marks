@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
-  anchorOf, autoMarks, barCells, blocksOf, endsAfter, findTwo, fractionOf, hangOf, hintLabels, jumpTarget, keysMeet, layout,
+  anchorOf, autoMarks, barCells, blocksOf, copyTargets, endsAfter, findTwo, fractionOf, hangOf, hintLabels, jumpTarget, keysMeet, layout,
   linesOf, litOf, normMap, padCells, pickLayout, plainOf, positions, previewOf, rowOfPoint, rowTops, rowsOf,
   selectionFragments, spanText, splitAt, toggleFragments,
 } from '../hooks/marks-core.mjs'
@@ -253,6 +253,36 @@ test('a span being chosen: hints in their places, an end\'s past its last charac
   // what is copied lights up again as a highlight of the same words
   const lit = layout(md, selectionFragments(text))
   assert.deepEqual(lit.filter(p => p.type === 'runs').map(p => litOf(p.runs)), ['重點開始了。', '下一段的結尾'])
+})
+
+const targets = md => copyTargets(blocksOf(md)).map(t => `${t.kind}:${t.text}`)
+
+test('the copy key offers `!` commands in code, with the `!` and without the backticks', () => {
+  assert.deepEqual(targets('在提示列打 `! bash publish-gist.sh` 就好。'), ['command:! bash publish-gist.sh'])
+  assert.deepEqual(targets('```\n  !git status\nls\n! npm test  \n```'), ['command:!git status', 'command:! npm test'])
+  // not a command: `!=`, `!!`, a bare `!`, nor a `!` outside code
+  assert.deepEqual(targets('`a != b`、`!=`、`!!`、`!` 與 ! bash x.sh'), [])
+  // where it starts in its block: on the `!`, past the backtick the reader no longer sees
+  const [t] = copyTargets(blocksOf('跑 `! ls`'))
+  assert.deepEqual([t.block, t.offset, t.length], [0, 2, 4])
+})
+
+test('the copy key offers the web addresses on view, without what closes the sentence round them', () => {
+  assert.deepEqual(targets('見 https://x.dev/a/b。也看 http://y.io/?q=1&r=2, 或 (https://z.dev/c).'), [
+    'url:https://x.dev/a/b', 'url:http://y.io/?q=1&r=2', 'url:https://z.dev/c',
+  ])
+  // a bracket the address opens itself stays; an address in code is one too
+  assert.deepEqual(targets('https://en.wikipedia.org/wiki/A_(b) 與 `https://q.dev/x`'), [
+    'url:https://en.wikipedia.org/wiki/A_(b)', 'url:https://q.dev/x',
+  ])
+  // a link shows its text, not its address; `https://` alone is no address
+  assert.deepEqual(targets('[SP-800](https://ob-link.dev/SP-800) 與 https:// 而已'), [])
+})
+
+test('an address inside a command is the command\'s; both kinds in reading order', () => {
+  assert.deepEqual(targets('先 `! curl https://x.dev/a` 再開 https://y.dev\n\n```\n! open https://z.dev\n```'), [
+    'command:! curl https://x.dev/a', 'url:https://y.dev', 'command:! open https://z.dev',
+  ])
 })
 
 test('keys meet when equal, or one long enough is the head of the other', () => {

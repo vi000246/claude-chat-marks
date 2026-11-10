@@ -11,6 +11,7 @@ Long Claude Code sessions scroll away fast: the one paragraph you needed is fort
 - **Auto marks.** When a turn ends, each of Claude's replies at least 12 rows tall gets a dim `◇`: the ones written for you to read, not the one-line progress notes between tool calls. A long reply whose top is less than half a screen under the last one is left out, since a jump to that one shows it already. They are worked out from the conversation each time, so there is nothing to delete: `/mark auto 20` asks for taller replies across the whole conversation at once, `/mark auto off` turns them off.
 - **Highlight.** Select words in one of Claude's replies with the mouse and press your highlight key: they get a background colour. Or type them: `/mark hl <words>` highlights them in the latest reply holding them. Point at a highlighted block and a *Remove highlight* button shows above it; selecting part of it again and pressing the key removes it too.
 - **Highlight by keys.** Press the highlight key with no new mouse selection and type where the span starts, easymotion-s2 style: its first two letters, or, for a Chinese character, the first two letters of its [Boshiamy](https://github.com/vi000246/vim-easymotion-boshiamy) code. A character whose code is one letter alone (四 is `f`, 一 is `e`) is found by that letter and Enter. One place on screen matching is taken at once; more get hints to type. Hints then sit just past each place the span may end (a sentence's or a clause's punctuation, a line's end, a URL's or a path's end); type one, or `s` and the two letters it ends on. Every other key acts as it is pressed, no Enter; with text in the prompt the pane cannot take the keyboard, so press `ctrl+x Tab` (Claude Code's own key for focusing a plugin pane) to move there. The span is copied to the clipboard and you are asked whether to highlight it: `y` (or Enter) or `n`; with neither for five seconds the pane closes, the copy kept. Over a span already lit, `y` takes the highlight off.
+- **Copy in one key.** Press your copy key to copy a command meant for the prompt's `!` (a code span or a code block line that starts with `!`, copied with the `!` and without the backticks, so it runs as soon as you paste it) or a web address shown in Claude's replies on screen. With only one there it is copied at once; with more, a letter goes up before each, and the one you press is copied. The same address twice gets one letter, an address inside a command belongs to the command, and a link's address, which the reply does not show, is not offered. Nothing is highlighted.
 - **Mark.** Press your mark key and a letter appears over each long reply on screen (over every message when none of them is long). Press one to mark that message (`◆ mark`). A message already marked gets a red letter and *unmark?*: its letter takes the mark off. A click on `◆ mark` does as well. Marking an auto mark keeps it in the marks panel.
 - **Jump.** Next and previous go through every auto mark, mark and highlighted block in conversation order, past the last back to the first. A mark lands at the top of its message, a highlight in the middle of the screen. For a few seconds after each jump a bar above the prompt shows where every stop lies in the whole conversation, the one you are on, and about the stretch on screen.
 - **Undo.** Your undo key takes back the last change of the marks or highlights (marking, highlighting, deleting, clearing all); press it again to go further back. Jumps and settings are not changes, and a reload of the plugin forgets what came before it.
@@ -51,7 +52,7 @@ Then set your hotkeys, since none are bound until you do:
 
 ![The hotkeys panel](docs/keys.png)
 
-Pick whatever suits you. The author uses `alt+m` mark, `alt+j` / `alt+k` next / previous, `alt+y` highlight, `alt+u` undo and `alt+o` marks panel.
+Pick whatever suits you. The author uses `alt+m` mark, `alt+j` / `alt+k` next / previous, `alt+y` highlight, `alt+i` copy, `alt+u` undo and `alt+o` marks panel.
 
 ## Commands
 
@@ -64,6 +65,7 @@ Pick whatever suits you. The author uses `alt+m` mark, `alt+j` / `alt+k` next / 
 | `/mark add` | Put the letters up, as the mark key does |
 | `/mark hl` | Highlight the mouse selection, as the highlight key does |
 | `/mark hl <words>` | Highlight those words in the latest reply holding them |
+| `/mark copy` | Copy a `!` command or a web address on screen, as the copy key does |
 | `/mark auto <rows>`, `/mark auto off`, `/mark auto on` | How tall a reply is to be marked by itself (default 12 rows), for every session; `off` marks none |
 | `/mark color #rrggbb` | The highlight background (default `#6b4f00`, a dark amber for dark terminals); `reset` for the default |
 | `/mark lang en`, `/mark lang zh` | The interface language, for every session |
@@ -71,7 +73,7 @@ Pick whatever suits you. The author uses `alt+m` mark, `alt+j` / `alt+k` next / 
 
 ## How the hotkeys work
 
-A plugin cannot register keyboard shortcuts of its own. chat-marks borrows six Claude Code keybinding actions and draws hidden buttons that answer them: five that only the `/diff` dialog handles (`diff:back`, `diff:nextFile`, `diff:previousFile`, `diff:nextSource`, `diff:previousSource`), and, for undo, the diff panel's *show/hide tests* (`app:toggleDiffNoiseFilter`), which no key answers by default. The hotkeys panel binds your keys to those actions in the `Global` context of `~/.claude/keybindings.json` (under `$CLAUDE_CONFIG_DIR` when that is set), so you can edit or remove them there by hand too. Two things follow:
+A plugin cannot register keyboard shortcuts of its own. chat-marks borrows seven Claude Code keybinding actions and draws hidden buttons that answer them: six that only the `/diff` dialog handles (`diff:back`, `diff:nextFile`, `diff:previousFile`, `diff:nextSource`, `diff:previousSource`, and `diff:dismiss` for copy), and, for undo, the diff panel's *show/hide tests* (`app:toggleDiffNoiseFilter`), which no key answers by default. The hotkeys panel binds your keys to those actions in the `Global` context of `~/.claude/keybindings.json` (under `$CLAUDE_CONFIG_DIR` when that is set), so you can edit or remove them there by hand too. Two things follow:
 
 - While the `/diff` dialog is open, those keys do the dialog's thing instead.
 - Taking over one of Claude Code's own combinations (say `alt+o`, fast mode) writes `null` for it in its context, which turns the built-in shortcut off; the command for it (`/fast`) still works.
@@ -84,7 +86,7 @@ The keys inside the marks panel (`j`, `k`, `x` by default) are set in the same p
 - **Reads** that file, to show your hotkeys and name them in the panes.
 - **Reads** the current session's transcript (`~/.claude/projects/<project>/<session id>.jsonl`), only to find the rows of long replies not drawn since a reload or a resume, so a jump can reach them. It keeps nothing from it but those row ids.
 - **Keeps** marks, highlights, those row ids and its settings in the plugin's own store, for the newest 40 sessions.
-- **Copies** to the clipboard only the span you pick when highlighting by keys.
+- **Copies** to the clipboard only the span you pick when highlighting by keys, and the command or address you pick with the copy key.
 - Sends nothing over the network and runs no programs.
 
 ## Limits

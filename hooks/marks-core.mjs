@@ -552,3 +552,52 @@ export function spanText(md, from, to) {
   }
   return parts.join('\n\n')
 }
+
+// ---- copying in one key -------------------------------------------------------------------
+//
+// What the copy key offers in a reply: a command for the prompt's `!` (a code span, or one line
+// of a code block, that starts with it), and each web address the reader sees. A link's address
+// is not there to see (the reply shows its text), so it is not offered.
+
+// `!` then a command: not `!=` or `!!`
+const COMMAND = /^!\s*[^\s=!]/
+// ASCII with no space, quote or angle bracket in it: a Chinese full stop right after one ends it
+const URL_AT = /https?:\/\/[^\s<>"`\u0080-￿]+/g
+const URL_TRAIL = /[.,;:!?'"*_~]+$/
+const OPENS = { ')': '(', ']': '[' }
+const count = (s, c) => s.split(c).length - 1
+
+// A web address without what closes the sentence round it: its trailing punctuation, and a closing
+// bracket it does not open itself (`(see https://x.dev/a)`, but `https://x.dev/a_(b)` whole).
+function trimUrl(u) {
+  let s = u.replace(URL_TRAIL, '')
+  while (OPENS[s.at(-1)] && count(s, OPENS[s.at(-1)]) < count(s, s.at(-1))) s = s.slice(0, -1).replace(URL_TRAIL, '')
+  return s
+}
+
+// The commands and web addresses of a reply (blocksOf), in reading order; an address inside a
+// command is the command's, not one of its own. [{ block, offset, length, text, kind }], `kind`
+// 'command' or 'url', `offset` where it starts in its block's text.
+export function copyTargets(blocks) {
+  const out = []
+  blocks.forEach((b, block) => {
+    const commands = []
+    let at = 0
+    for (const s of b.segs) {
+      if (s.code) {
+        const lead = s.text.length - s.text.trimStart().length
+        const text = s.text.trim()
+        if (COMMAND.test(text)) commands.push({ block, offset: at + lead, length: text.length, text, kind: 'command' })
+      }
+      at += s.text.length
+    }
+    const inCommand = i => commands.some(c => i >= c.offset && i < c.offset + c.length)
+    const urls = []
+    for (const m of b.text.matchAll(URL_AT)) {
+      const text = trimUrl(m[0])
+      if (text.length > m[0].indexOf('//') + 2 && !inCommand(m.index)) urls.push({ block, offset: m.index, length: text.length, text, kind: 'url' })
+    }
+    out.push(...[...commands, ...urls].sort((x, y) => x.offset - y.offset))
+  })
+  return out
+}

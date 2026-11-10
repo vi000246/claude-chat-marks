@@ -62,6 +62,11 @@ export const STRINGS = {
     closesIn: s => `Closes in ${s} s, the copy kept`,
     yes: 'y  yes',
     no: 'n  no',
+    // the copy key
+    copyTitle: 'Copy',
+    copyHint: key => `A letter copies that one; ${key} closes`,
+    copiedText: s => `Copied: ${s}`,
+    nothingToCopy: "No ! command or web address in Claude's replies on screen (needs /tui fullscreen)",
     unmarkPrefix: 'unmark? ',
     panelTitle: 'marks',
     tabMarks: 'Marks',
@@ -75,7 +80,7 @@ export const STRINGS = {
     inReply: s => `in: ${s}`,
     clickToRemove: '  click to remove',
     removeHighlight: 'Remove highlight',
-    markDescription: 'Marks panel (a letter jumps, x deletes); also keys|next|prev|add|hl|undo|auto <rows>|off|color #rrggbb|lang en|zh',
+    markDescription: 'Marks panel (a letter jumps, x deletes); also keys|next|prev|add|hl|copy|undo|auto <rows>|off|color #rrggbb|lang en|zh',
     clearDescription: 'Remove every mark and highlight of this session',
     keysHint: 'Click a row (or press its letter) to change it.',
     editing: label => `Editing: ${label}`,
@@ -99,6 +104,7 @@ export const STRINGS = {
       highlight: 'Highlight',
       undo: 'Undo',
       panel: 'Open marks panel',
+      copy: 'Copy a command / URL',
       down: 'Panel: cursor down',
       up: 'Panel: cursor up',
       remove: 'Panel: delete mode',
@@ -154,6 +160,15 @@ export const STRINGS = {
         ],
       },
       {
+        title: 'Copy a command or a web address',
+        slots: ['copy'],
+        lines: [
+          "Copies a ! command (code that starts with !, the ! kept: paste it into the prompt and it runs) or a web address",
+          "shown in Claude's replies on screen. One there: it is copied at once. More: a letter goes up before each; press one.",
+          "{copy} again closes. A link's hidden address is not offered, and nothing is highlighted.",
+        ],
+      },
+      {
         title: 'Undo',
         slots: ['undo'],
         lines: [
@@ -174,7 +189,7 @@ export const STRINGS = {
       {
         title: 'Commands',
         lines: [
-          '/mark auto <rows> | off · /mark color #rrggbb · /mark lang en | zh · /mark hl <words> · /mark-clear',
+          '/mark auto <rows> | off · /mark color #rrggbb · /mark lang en | zh · /mark hl <words> · /mark copy · /mark-clear',
         ],
       },
     ],
@@ -249,6 +264,10 @@ export const STRINGS = {
     closesIn: s => `${s} 秒後自動關閉，已複製的保留`,
     yes: 'y 是',
     no: 'n 否',
+    copyTitle: '複製',
+    copyHint: key => `按字母複製那一個，${key} 關閉`,
+    copiedText: s => `已複製：${s}`,
+    nothingToCopy: '畫面上 Claude 的回應裡沒有 ! 命令或網址可以複製（要在 /tui fullscreen 下用）',
     unmarkPrefix: '取消標記? ',
     panelTitle: 'marks',
     tabMarks: '書籤',
@@ -262,7 +281,7 @@ export const STRINGS = {
     inReply: s => `在：${s}`,
     clickToRemove: '  點一下取消',
     removeHighlight: '取消重點',
-    markDescription: 'mark 面板（字母跳、x 刪）；也可帶 keys|next|prev|add|hl|undo|auto <列數>|off|color #rrggbb|lang en|zh',
+    markDescription: 'mark 面板（字母跳、x 刪）；也可帶 keys|next|prev|add|hl|copy|undo|auto <列數>|off|color #rrggbb|lang en|zh',
     clearDescription: '清掉這個 session 所有 mark 與重點',
     keysHint: '點一下要改的項目（或按左邊字母）來編輯。',
     editing: label => `編輯：${label}`,
@@ -286,6 +305,7 @@ export const STRINGS = {
       highlight: '劃重點',
       undo: '還原上一步',
       panel: '開 mark 面板',
+      copy: '複製命令／網址',
       down: '面板：游標往下',
       up: '面板：游標往上',
       remove: '面板：刪除模式',
@@ -339,6 +359,15 @@ export const STRINGS = {
         ],
       },
       {
+        title: '一鍵複製命令或網址',
+        slots: ['copy'],
+        lines: [
+          '複製畫面上 Claude 回應裡的 ! 命令（程式碼裡以 ! 開頭的，連 ! 一起複製，貼到輸入框就能跑）或網址。',
+          '畫面上只有一個就直接複製；有好幾個時每個前面出現字母，按字母複製那一個。再按 {copy} 關閉。',
+          '連結藏起來的網址不算；複製不會劃重點。',
+        ],
+      },
+      {
         title: '還原上一步',
         slots: ['undo'],
         lines: [
@@ -359,7 +388,7 @@ export const STRINGS = {
       {
         title: '指令',
         lines: [
-          '/mark auto <列數>|off・/mark color #rrggbb・/mark lang en|zh・/mark hl <文字>・/mark-clear',
+          '/mark auto <列數>|off・/mark color #rrggbb・/mark lang en|zh・/mark hl <文字>・/mark copy・/mark-clear',
         ],
       },
     ],

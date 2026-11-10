@@ -10,6 +10,8 @@
 //          as does the button that shows while the pointer is over a highlighted block. With no
 //          new mouse selection, a span by keys: two letters for its start (easymotion-s2, Chinese
 //          by its Boshiamy code), a hint for its end; it is copied, then y highlights it
+//   alt+i  copy a `!` command or a web address in Claude's replies on screen: the one there is at
+//          once, or a letter on each and the one pressed
 //   the bar  above the prompt for a few seconds after alt+j / alt+k: where every stop lies in the
 //          conversation, the one jumped to, and about what the screen shows
 //   alt+o  the panel (also /mark), three tabs (1, 2, 3):
@@ -21,7 +23,7 @@
 //                   opens here; the chords above are only what this author picked: the mod binds
 //                   nothing until someone sets them)
 //          guide    what each feature does and how, with the chords it answers to now (/mark guide)
-//   /mark next|prev|add|hl [words]|undo|auto <rows>|off|on|color <#rrggbb>|lang en|zh
+//   /mark next|prev|add|hl [words]|copy|undo|auto <rows>|off|on|color <#rrggbb>|lang en|zh
 //   /mark-clear  every mark and highlight of this session gone (auto marks are not the person's)
 //
 // Where alt+j / alt+k and the panel go: a mark is a message's top; a highlight is each highlighted
@@ -46,6 +48,8 @@
 //   pick        { items: [{ id, kind, key, snippet }] } while alt+m's letters are up, else null
 //   choose      { phase: 'start' | 'end' | 'confirm', search, typed, points, from, to, note, ... }
 //               while alt+y picks a span by keys (see "highlighting by keys"), else null
+//   copy        { items: [{ id, block, offset, length, text, kind, label }] } while alt+i's letters
+//               are up, else null
 //   bar         { stops: [{ at, how, isCurrent }], thumb, n, total } while the bar shows
 //   panel       { tab, mode: 'jump' | 'delete', cursor: <target id>, origin, confirmClear } while
 //               the panel is up; origin: where closing it scrolls back to
@@ -62,7 +66,7 @@
 import { atom, read, update } from 'claude-code'
 import { BOSHIAMY1, BOSHIAMY2 } from './boshiamy.mjs'
 import {
-  LETTERS, anchorOf, autoMarks, barCells, blocksOf, endsAfter, findTwo, fractionOf, hangOf, hintLabels, jumpTarget, keyOf,
+  LETTERS, anchorOf, autoMarks, barCells, blocksOf, copyTargets, endsAfter, findTwo, fractionOf, hangOf, hintLabels, jumpTarget, keyOf,
   keysMeet, layout, linesOf, litOf, padCells, pickLayout, plainOf, positions, previewOf, rowOfPoint, rowTops, rowsOf,
   selectionFragments, snippetOf, spanText, splitAt, toggleFragments,
 } from './marks-core.mjs'
@@ -77,17 +81,20 @@ const ACTIONS = {
   // no key of Claude Code's own answers this one: the diff panel's show/hide tests
   undo: 'app:toggleDiffNoiseFilter',
   panel: 'diff:previousSource',
+  // the /diff dialog's close (its Escape); diff:viewDetails is not one keybindings.json may name
+  copy: 'diff:dismiss',
 }
 // the rows of the settings tab: the long-reply height, the chords kept in keybindings.json, then
 // the panel's own keys
 const SETTING_SLOTS = ['auto']
-const GLOBAL_SLOTS = ['mark', 'next', 'prev', 'highlight', 'undo', 'panel']
+const GLOBAL_SLOTS = ['mark', 'next', 'prev', 'highlight', 'undo', 'panel', 'copy']
 // how many changes back undo reaches
 const UNDO_DEPTH = 50
 const PANEL_SLOTS = ['down', 'up', 'remove']
 const DEFAULT_PANEL_KEYS = { down: 'j', up: 'k', remove: 'x' }
 const PICK_PANE = 'chat-marks-pick'
 const CHOOSE_PANE = 'chat-marks-choose'
+const COPY_PANE = 'chat-marks-copy-pick'
 const PANEL = 'chat-marks'
 const KEEP_SESSIONS = 40
 // dark amber: readable white text on a black terminal without glaring
@@ -107,6 +114,7 @@ const marksAtom = atom({ plugin: 'chat-marks', key: 'marks' }, [])
 const hlAtom = atom({ plugin: 'chat-marks', key: 'highlights' }, {})
 const autoAtom = atom({ plugin: 'chat-marks', key: 'auto' }, [])
 const chooseAtom = atom({ plugin: 'chat-marks', key: 'choose' }, null)
+const copyAtom = atom({ plugin: 'chat-marks', key: 'copy' }, null)
 const barAtom = atom({ plugin: 'chat-marks', key: 'bar' }, null)
 const pickAtom = atom({ plugin: 'chat-marks', key: 'pick' }, null)
 const panelAtom = atom({ plugin: 'chat-marks', key: 'panel' }, null)
@@ -413,6 +421,7 @@ async function unmark($, id) {
 async function markKey($) {
   if (await read($, pickAtom)) return closePick($)
   await closeChoose($)
+  await closeCopy($)
   const t = await strings($)
   const visible = visibleNow()
   const pos = positions(await $.session.messages(), visible)
@@ -481,15 +490,17 @@ async function repliesOnScreen($) {
     })
 }
 
+// Whether the screen shows the row point `p` of reply `r` is on, as far as its text tells.
+function isShown(r, p) {
+  const row = r && rowOfPoint(r.text, r.blocks, p, bodyColumns())
+  return !!r?.view && row >= r.view.first && row <= r.view.last
+}
+
 // Hints for points ([{ id, block, offset }] in reading order, each reply's in `replies`), of the
 // letters in `alphabet`: those on a row the screen shows get the single letters.
 function labelled(points, replies, alphabet = LETTERS) {
   const of = new Map(replies.map(r => [r.id, r]))
-  const shows = p => {
-    const r = of.get(p.id)
-    const row = r && rowOfPoint(r.text, r.blocks, p, bodyColumns())
-    return !!r?.view && row >= r.view.first && row <= r.view.last
-  }
+  const shows = p => isShown(of.get(p.id), p)
   const order = [...points.filter(shows), ...points.filter(p => !shows(p))]
   const labels = hintLabels(order.length, alphabet)
   const byPoint = new Map(order.map((p, i) => [p, labels[i]]))
@@ -622,12 +633,55 @@ async function answerChoose($, yes) {
   await toggleHighlight($, await strings($), ch.from.id, msg, ch.frags)
 }
 
+// ---- copying in one key -------------------------------------------------------------------
+//
+// alt+i: the `!` commands and web addresses in Claude's replies on screen (marks-core copyTargets),
+// each text once. The one there is goes to the clipboard at once; more get a letter each, over the
+// place it starts in its reply and beside it in COPY_PANE, and the letter pressed copies that one.
+// Nothing is highlighted, so nothing goes on the undo stack.
+
+async function closeCopy($) {
+  if (!(await read($, copyAtom))) return
+  await update($, copyAtom, () => null)
+  await $.ui.close({ id: COPY_PANE })
+}
+
+// What alt+i offers: the targets on a row the screen shows, or, when the reckoning of rows puts
+// none there, every one in the replies on screen. A text met again is not offered twice.
+async function copyItems($) {
+  const replies = await repliesOnScreen($)
+  const all = replies.flatMap(r => copyTargets(r.blocks).map(x => ({ id: r.id, ...x, shown: isShown(r, x) })))
+  const offered = all.some(x => x.shown) ? all.filter(x => x.shown) : all
+  return offered.filter((x, i) => offered.findIndex(y => y.text === x.text) === i)
+}
+
+async function copyKey($) {
+  if (await read($, copyAtom)) return closeCopy($)
+  await closePick($)
+  await closeChoose($)
+  const t = await strings($)
+  const found = await copyItems($)
+  if (!found.length) return toast($, t.nothingToCopy)
+  if (found.length === 1) return copyItem($, found[0])
+  const items = found.slice(0, letters.length).map(({ id, block, offset, length, text, kind }, i) => ({ id, block, offset, length, text, kind, label: letters[i] }))
+  await update($, copyAtom, () => ({ items }))
+  await $.ui.open({ id: COPY_PANE, title: t.copyTitle, focus: true, rows: items.length + 2 })
+}
+
+async function copyItem($, item) {
+  await closeCopy($)
+  const t = await strings($)
+  const copied = await $.ui.copy({ text: item.text }).catch(() => ({ isCopied: false }))
+  toast($, copied?.isCopied ? t.copiedText(snippetOf(item.text, 60)) : t.notCopied)
+}
+
 // ---- highlights -----------------------------------------------------------------
 
 // alt+y: the mouse selection lit (or its highlight off); with none made since the last alt+y, the
 // sentences of a reply picked by keys instead.
 async function highlight($) {
   await closePick($)
+  await closeCopy($)
   const t = await strings($)
   const sel = await $.ui.selection()
   const isNew = sel && !(lastSel && lastSel.text === sel.text && lastSel.requestId === sel.requestId)
@@ -1070,7 +1124,7 @@ async function registerCommands($) {
   await $.command.register({
     name: 'mark',
     description: t.markDescription,
-    argumentHint: '[keys|next|prev|add|hl|auto <rows>|off|color <#rrggbb>|lang en|zh]',
+    argumentHint: '[keys|next|prev|add|hl|copy|auto <rows>|off|color <#rrggbb>|lang en|zh]',
     immediate: true,
   })
   await $.command.register({ name: 'mark-clear', description: t.clearDescription, immediate: true })
@@ -1212,6 +1266,14 @@ async function chooseParts($, e) {
   if (!hints.length && !isMine) return null
   const frags = (await read($, hlAtom))[e.requestId]?.frags ?? []
   return pickLayout(e.props.text, frags, { hints, sel: isMine ? { from: ch.from, to: ch.to } : null })
+}
+
+// A reply while alt+i's letters are up: each letter just before the command or address it copies.
+// Null for a row with none.
+async function copyParts($, e) {
+  const hints = (await read($, copyAtom))?.items.filter(x => x.id === e.requestId) ?? []
+  if (!hints.length) return null
+  return pickLayout(e.props.text, (await read($, hlAtom))[e.requestId]?.frags ?? [], { hints })
 }
 
 function withHead($, e, head, theirs) {
@@ -1418,7 +1480,7 @@ async function drawGuideTab($, e, t) {
   const chord = slot => (doc && chordFor(doc, ACTIONS[slot])) || t.notSet
   const fill = line => line
     .replace(/\{(down|up|remove)\}/g, (_, k) => keys[k])
-    .replace(/\{(mark|highlight|panel)\}/g, (_, slot) => chord(slot))
+    .replace(/\{(mark|highlight|panel|copy)\}/g, (_, slot) => chord(slot))
   return t.guide.map((g, i) => Box({
     key: 'chat-marks-guide-' + i,
     flexDirection: 'column',
@@ -1472,6 +1534,7 @@ export function register(on) {
   on('prompt.submit', async ($, e, next) => {
     await closePick($)
     await closeChoose($)
+    await closeCopy($)
     lastSel = null
     await update($, barAtom, () => null)
     return next(e)
@@ -1479,6 +1542,11 @@ export function register(on) {
 
   on('ui.close', { id: PICK_PANE }, async ($, e, next) => {
     await update($, pickAtom, () => null)
+    return next(e)
+  })
+
+  on('ui.close', { id: COPY_PANE }, async ($, e, next) => {
+    await update($, copyAtom, () => null)
     return next(e)
   })
 
@@ -1527,6 +1595,7 @@ export function register(on) {
     else if (arg === 'add' || arg === 'm') await markKey($)
     else if ((arg === 'hl' || arg === 'y') && rest.length) await highlightWords($, rest.join(' '))
     else if (arg === 'hl' || arg === 'y') await highlight($)
+    else if (arg === 'copy' || arg === 'i') await copyKey($)
     else if (arg === 'undo' || arg === 'u') await undo($)
     else if (arg === 'auto') return { text: await setAuto($, value) }
     else if (arg === 'color') return { text: await setColor($, value) }
@@ -1549,7 +1618,7 @@ export function register(on) {
     remember(e, 'assistant')
     const t = await strings($)
     const head = await headFor($, e, t, 'assistant')
-    const picking = e.props.isSummary ? null : await chooseParts($, e)
+    const picking = e.props.isSummary ? null : (await chooseParts($, e)) ?? (await copyParts($, e))
     if (picking) return drawReply($, e, t, picking, head, await read($, colorAtom))
     const frags = (await read($, hlAtom))[e.requestId]?.frags
     const parts = frags && !e.props.isSummary ? layout(e.props.text, frags) : null
@@ -1645,6 +1714,38 @@ export function register(on) {
     })
   })
 
+  // alt+i's letters: one per command or address offered, the same letter in the reply before it.
+  // Without the keyboard, how to move it here.
+  on('ui.render', { component: 'Pane', requestId: COPY_PANE }, async ($, e) => {
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const t = await strings($)
+    const color = await read($, colorAtom)
+    const room = Math.max(16, e.props.bodyColumns - 6)
+    const rows = ((await read($, copyAtom))?.items ?? []).map(x => Button({
+      key: `${COPY_PANE}-${x.label}`,
+      hotkey: x.label,
+      plain: true,
+      label: snippetOf(x.text, room),
+      onPress: safe($, () => copyItem($, x)),
+      children: [
+        Text({ backgroundColor: color, color: 'white', weight: 'bold', children: [` ${x.label} `] }),
+        Text({ ...(x.kind === 'command' ? { color: 'permission' } : {}), children: [' ' + snippetOf(x.text, room)] }),
+      ],
+    }))
+    let focusLine = []
+    if (e.props.isFocused === false) {
+      const doc = await readBindings($, await bindingsPath($))
+      focusLine = [Text({ color: 'warning', children: [t.focusHere((doc && chordFor(doc, FOCUS_ACTION)) || 'ctrl+x tab')] })]
+    }
+    // alt+i again while the pane holds the keyboard: a pane's Button takes it first
+    const close = Box({
+      display: 'none',
+      children: [Button({ key: 'chat-marks-copy-close', label: 'close', action: ACTIONS.copy, onPress: safe($, () => closeCopy($)) })],
+    })
+    const hint = t.copyHint(await chordText($, t, 'copy'))
+    return Box({ flexDirection: 'column', children: [...focusLine, Text({ dimColor: true, children: [hint] }), ...rows, close] })
+  })
+
   // The bar after a jump, in the band above the prompt.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const bar = await read($, barAtom)
@@ -1711,6 +1812,7 @@ export function register(on) {
         chord('chat-marks-hl', ACTIONS.highlight, () => highlight($)),
         chord('chat-marks-undo', ACTIONS.undo, () => undo($)),
         chord('chat-marks-panel', ACTIONS.panel, () => togglePanel($)),
+        chord('chat-marks-copy', ACTIONS.copy, () => copyKey($)),
       ],
     })
     return Box({ flexDirection: 'row', children: theirs ? [theirs, chords] : [chords] })
