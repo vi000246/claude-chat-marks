@@ -795,92 +795,79 @@ test('/mark color and /mark lang change the background and the language', async 
   expect(toasts.at(-1)).toBe('已取消重點')
 })
 
-test('alt+i copies the one ! command on screen at once, the ! kept; nothing is highlighted or undone', async ($, on) => {
-  const text = long('在提示列打 `! bash publish-gist.sh` 就好。')
+test('alt+y by keys: a number before each ! command and web address; the number copies it, nothing asked', async ($, on) => {
+  const text = long('先跑 `! npm test`，再看 https://x.dev/a/b。也可以開 (https://y.dev/c). 又是 https://x.dev/a/b')
   const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }] }
-  const { toasts, opened } = stub(on, world)
+  const { toasts, opened, closed } = stub(on, world)
   const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
   const hint = await $.ui.mount(HINT)
 
-  await hint.press({ key: 'chat-marks-copy' })
-  expect(world.copies).toEqual(['! bash publish-gist.sh'])
-  expect(toasts.at(-1)).toBe('Copied: ! bash publish-gist.sh')
-  expect(opened).toEqual([])
+  await hint.press({ key: 'chat-marks-hl' })
+  expect(opened).toEqual(['chat-marks-choose'])
+  // an address met again gets no number of its own
+  expect(await hintsIn(msg)).toEqual(['1', '2', '3'])
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
+  expect(await chooser.find({ type: 'Text', text: "Type the start's two letters" })).toBeDefined()
+  expect(await chooser.find({ type: 'Text', text: 'Or a number: copy' })).toBeDefined()
+
+  // the command with its `!`, without the backticks; the pane closes with no question
+  await type(chooser, '1')
+  expect(world.copies).toEqual(['! npm test'])
+  expect(toasts.at(-1)).toBe('Copied: ! npm test')
+  expect(closed).toEqual(['chat-marks-choose'])
+  expect(await hintsIn(msg)).toEqual([])
   expect(await lit(msg)).toEqual([])
   await hint.press({ key: 'chat-marks-undo' })
   expect(toasts.at(-1)).toMatch(/^Nothing to undo/)
+
+  // an address without the bracket and the full stop round it
+  await hint.press({ key: 'chat-marks-hl' })
+  await type(chooser, '3')
+  expect(world.copies).toEqual(['! npm test', 'https://y.dev/c'])
 })
 
-test('alt+i with several: a letter before each, in the reply and the pane; the letter pressed copies that one', async ($, on) => {
-  const text = long('先跑 `! npm test`，再看 https://x.dev/a/b。也可以開 (https://y.dev/c). 又是 https://x.dev/a/b')
+test('alt+y by keys: once a letter is typed the numbers go, and a digit is the second of the two letters', async ($, on) => {
+  const text = long('`! ls` 與 https://x.dev')
   const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }] }
-  const { toasts, opened, opens, closed } = stub(on, world)
+  stub(on, world)
   const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
   const hint = await $.ui.mount(HINT)
+  await hint.press({ key: 'chat-marks-hl' })
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
+  expect(await hintsIn(msg)).toEqual(['1', '2'])
 
-  await hint.press({ key: 'chat-marks-copy' })
-  expect(opened).toEqual(['chat-marks-copy-pick'])
-  expect(opens.at(-1).closeOnEscape).toBeUndefined()
-  expect(world.copies).toBeUndefined()
-  // an address met again gets no letter of its own
-  expect(await hintsIn(msg)).toEqual(['a', 's', 'd'])
-  const picker = await $.ui.mount(pane('chat-marks-copy-pick'))
-  expect(await picker.find({ type: 'Text', text: /^A letter copies that one/ })).toBeDefined()
-  expect((await picker.find({ key: 'chat-marks-copy-pick-s' }))?.props.hotkey).toBe('s')
-
-  await picker.press({ key: 'chat-marks-copy-pick-d' })
-  expect(world.copies).toEqual(['https://y.dev/c'])
-  expect(toasts.at(-1)).toBe('Copied: https://y.dev/c')
-  expect(closed).toEqual(['chat-marks-copy-pick'])
+  await type(chooser, 'x')
   expect(await hintsIn(msg)).toEqual([])
+  expect(await chooser.find({ type: 'Text', text: 'Or a number: copy' })).toBeUndefined()
+  await type(chooser, '1')
+  expect(await chooser.find({ type: 'Text', text: 'No "x1" on screen' })).toBeDefined()
+  expect(world.copies).toBeUndefined()
+  // back to the start: the numbers are up again; a digit no number sits on starts the search
+  expect(await hintsIn(msg)).toEqual(['1', '2'])
+  await type(chooser, '7')
+  expect(await chooser.find({ type: 'Text', text: '> 7' })).toBeDefined()
+  expect(world.copies).toBeUndefined()
 })
 
-test('alt+i with nothing to copy says so; a link\'s hidden address is not offered', async ($, on) => {
+test('alt+y by keys: a link\'s hidden address gets no number; with none, the pane says nothing of copying', async ($, on) => {
   const text = long('沒有命令，也沒有看得到的網址：[SP-800](https://ob-link.dev/SP-800)')
   const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }] }
-  const { toasts, opened } = stub(on, world)
-  await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
-  const hint = await $.ui.mount(HINT)
-  await hint.press({ key: 'chat-marks-copy' })
-  expect(toasts.at(-1)).toMatch(/^No ! command or web address/)
-  expect(world.copies).toBeUndefined()
-  expect(opened).toEqual([])
-})
-
-test('/mark copy does what alt+i does; alt+i again closes the letters', async ($, on) => {
-  const text = long('`! ls` 或 `! pwd`')
-  const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }] }
-  const { opened, closed } = stub(on, world)
+  stub(on, world)
   const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
   const hint = await $.ui.mount(HINT)
-
-  await $.command.run({ command: 'mark', args: 'copy' })
-  expect(opened).toEqual(['chat-marks-copy-pick'])
-  expect(await hintsIn(msg)).toEqual(['a', 's'])
-  // the chord again, from the prompt, or from the pane holding the keyboard
-  await hint.press({ key: 'chat-marks-copy' })
-  expect(closed).toEqual(['chat-marks-copy-pick'])
+  await hint.press({ key: 'chat-marks-hl' })
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
   expect(await hintsIn(msg)).toEqual([])
-  await hint.press({ key: 'chat-marks-copy' })
-  const picker = await $.ui.mount(pane('chat-marks-copy-pick'))
-  await picker.press({ key: 'chat-marks-copy-close' })
-  expect(closed).toEqual(['chat-marks-copy-pick', 'chat-marks-copy-pick'])
+  expect(await chooser.find({ type: 'Text', text: 'Or a number: copy' })).toBeUndefined()
+  await type(chooser, '1')
+  expect(await chooser.find({ type: 'Text', text: '> 1' })).toBeDefined()
   expect(world.copies).toBeUndefined()
 })
 
-test('the copy key has a row in Settings, saved as alt+i, and a section in the guide', async ($, on) => {
-  const { files } = stub(on, {})
-  await $.command.run({ command: 'mark', args: 'keys' })
-  const keys = await $.ui.mount(pane('chat-marks'))
-  await keys.press({ key: 'chat-marks-key-row-copy' })
-  expect(await keys.find({ type: 'Text', text: 'Editing: Copy a command / URL' })).toBeDefined()
-  await keys.input({ key: 'chat-marks-key-letter', text: 'i' })
-  const global = JSON.parse(files.get(KEYFILE)!).bindings.find((b: any) => b.context === 'Global').bindings
-  expect(global).toEqual({ 'alt+i': 'diff:dismiss' })
-  expect(await keys.find({ type: 'Text', text: 'Copy a command / URL: alt+i' })).toBeDefined()
-
-  await keys.press({ key: 'chat-marks-tab-guide' })
-  const section = await keys.find({ key: 'chat-marks-guide-5' })
-  expect(section?.text).toMatch(/^Copy a command or a web address\s*alt\+i/)
-  expect(section?.text).toMatch(/alt\+i again closes/)
+test('the guide says a number copies a ! command or a web address', async ($, on) => {
+  stub(on, {})
+  await $.command.run({ command: 'mark', args: 'guide' })
+  const panel = await $.ui.mount(pane('chat-marks'))
+  const section = await panel.find({ key: 'chat-marks-guide-4' })
+  expect(section?.text).toMatch(/A number sits before each ! command and web address on screen/)
 })
