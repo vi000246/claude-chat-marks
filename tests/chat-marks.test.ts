@@ -674,6 +674,35 @@ test('an auto mark not drawn since a reload is found in the transcript file', as
   expect((store.get('s:sess-1') as any).auto.map((a: any) => a.id)).toEqual(['old-uuid'])
 })
 
+test('alt+u undoes the last change, again and again back', async ($, on) => {
+  const world: World = { rows: [{ role: 'assistant', text: '一段重點文字', toolUses: [] }] }
+  const { toasts } = stub(on, world)
+  const msg = await $.ui.mount(reply('r1', '一段重點文字', { first: 0, last: 0, of: 1 }))
+  const hint = await $.ui.mount(HINT)
+  await hint.press({ key: 'chat-marks-undo' })
+  expect(toasts.at(-1)).toMatch(/^Nothing to undo/)
+
+  world.sel = { text: '重點文字', requestId: 'r1' }
+  await hint.press({ key: 'chat-marks-hl' })
+  await markByLetter($, hint, 0)
+  await $.command.run({ command: 'mark-clear', args: '' })
+  expect(await lit(msg)).toEqual([])
+
+  await hint.press({ key: 'chat-marks-undo' })
+  expect(toasts.at(-1)).toBe('Undone: clearing every mark and highlight')
+  expect(await lit(msg)).toEqual(['重點文字'])
+  expect(await msg.find({ type: 'Text', text: '◆ mark' })).toBeDefined()
+
+  await hint.press({ key: 'chat-marks-undo' })
+  expect(toasts.at(-1)).toMatch(/^Undone: marking "一段重點文字"/)
+  expect(await msg.find({ type: 'Text', text: '◆ mark' })).toBeUndefined()
+  expect(await lit(msg)).toEqual(['重點文字'])
+
+  await $.command.run({ command: 'mark', args: 'undo' })
+  expect(toasts.at(-1)).toBe('Undone: highlighting "重點文字"')
+  expect(await lit(msg)).toEqual([])
+})
+
 test('/mark-clear takes every mark and highlight off', async ($, on) => {
   const world: World = { rows: [{ role: 'assistant', text: '一段重點文字', toolUses: [] }] }
   const { store } = stub(on, world)

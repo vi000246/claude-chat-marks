@@ -13,6 +13,7 @@ Long Claude Code sessions scroll away fast: the one paragraph you needed is fort
 - **Highlight by keys.** Press the highlight key with no new mouse selection and type where the span starts, easymotion-s2 style: its first two letters, or, for a Chinese character, the first two letters of its [Boshiamy](https://github.com/vi000246/vim-easymotion-boshiamy) code. A character whose code is one letter alone (四 is `f`, 一 is `e`) is found by that letter and Enter. One place on screen matching is taken at once; more get hints to type. Hints then sit just past each place the span may end (a sentence's or a clause's punctuation, a line's end, a URL's or a path's end); type one, or `s` and the two letters it ends on. Every other key acts as it is pressed, no Enter; with text in the prompt the pane cannot take the keyboard, so press `ctrl+x Tab` (Claude Code's own key for focusing a plugin pane) to move there. The span is copied to the clipboard and you are asked whether to highlight it: `y` (or Enter) or `n`. Over a span already lit, `y` takes the highlight off.
 - **Mark.** Press your mark key and a letter appears over each long reply on screen (over every message when none of them is long). Press one to mark that message (`◆ mark`). A message already marked gets a red letter and *unmark?*: its letter takes the mark off. A click on `◆ mark` does as well. Marking an auto mark keeps it in the marks panel.
 - **Jump.** Next and previous go through every auto mark, mark and highlighted block in conversation order, past the last back to the first. A mark lands at the top of its message, a highlight in the middle of the screen. For a few seconds after each jump a bar above the prompt shows where every stop lies in the whole conversation, the one you are on, and about the stretch on screen.
+- **Undo.** Your undo key takes back the last change of the marks or highlights (marking, highlighting, deleting, clearing all); press it again to go further back. Jumps and settings are not changes, and a reload of the plugin forgets what came before it.
 - **Marks panel**, first tab. The marks and highlights you made (not the auto marks) in one list, a letter each: press the letter to jump there. `j` / `k` move the cursor and show the conversation at that entry as you go; Enter or the letter jumps for good, Escape takes you back to where you opened the panel. `x` then a letter deletes one, `0` twice deletes them all; the mouse wheel and PageUp / PageDown scroll.
 - **Settings**, second tab (`/mark keys` or `/mark settings` opens it directly). Its first row is the long-reply height: type a number of rows and Enter, or press *Off* or *Default*. The hotkeys follow: click a row (or press its letter) and an editor opens above the list: `ctrl` / `alt` / `shift` toggles and a one-letter field. Type the letter, Enter or *Save*, done. A combination Claude Code already uses is named first and taken over only on a second *Save*. Everything works from the keyboard too (Tab, Enter, typing).
 - **Guide**, third tab (`/mark guide`): how each part works, with the hotkeys it answers to as you set them.
@@ -50,7 +51,7 @@ Then set your hotkeys, since none are bound until you do:
 
 ![The hotkeys panel](docs/keys.png)
 
-Pick whatever suits you. The author uses `alt+m` mark, `alt+j` / `alt+k` next / previous, `alt+y` highlight and `alt+o` marks panel.
+Pick whatever suits you. The author uses `alt+m` mark, `alt+j` / `alt+k` next / previous, `alt+y` highlight, `alt+u` undo and `alt+o` marks panel.
 
 ## Commands
 
@@ -59,6 +60,7 @@ Pick whatever suits you. The author uses `alt+m` mark, `alt+j` / `alt+k` next / 
 | `/mark` | Open the panel on its marks tab |
 | `/mark keys` | Open the panel on its hotkeys tab |
 | `/mark next`, `/mark prev` | Jump to the next / previous mark |
+| `/mark undo` | Undo the last change of the marks or highlights, as the undo key does |
 | `/mark add` | Put the letters up, as the mark key does |
 | `/mark hl` | Highlight the mouse selection, as the highlight key does |
 | `/mark hl <words>` | Highlight those words in the latest reply holding them |
@@ -69,7 +71,7 @@ Pick whatever suits you. The author uses `alt+m` mark, `alt+j` / `alt+k` next / 
 
 ## How the hotkeys work
 
-A plugin cannot register keyboard shortcuts of its own. chat-marks borrows five Claude Code keybinding actions that only the `/diff` dialog handles (`diff:back`, `diff:nextFile`, `diff:previousFile`, `diff:nextSource`, `diff:previousSource`) and draws hidden buttons that answer them. The hotkeys panel binds your keys to those actions in the `Global` context of `~/.claude/keybindings.json` (under `$CLAUDE_CONFIG_DIR` when that is set), so you can edit or remove them there by hand too. Two things follow:
+A plugin cannot register keyboard shortcuts of its own. chat-marks borrows six Claude Code keybinding actions and draws hidden buttons that answer them: five that only the `/diff` dialog handles (`diff:back`, `diff:nextFile`, `diff:previousFile`, `diff:nextSource`, `diff:previousSource`), and, for undo, the diff panel's *show/hide tests* (`app:toggleDiffNoiseFilter`), which no key answers by default. The hotkeys panel binds your keys to those actions in the `Global` context of `~/.claude/keybindings.json` (under `$CLAUDE_CONFIG_DIR` when that is set), so you can edit or remove them there by hand too. Two things follow:
 
 - While the `/diff` dialog is open, those keys do the dialog's thing instead.
 - Taking over one of Claude Code's own combinations (say `alt+o`, fast mode) writes `null` for it in its context, which turns the built-in shortcut off; the command for it (`/fast`) still works.

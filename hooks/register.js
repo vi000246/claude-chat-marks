@@ -4,6 +4,8 @@
 //          the ones marked already); a letter marks that one, or, on one already marked (its
 //          letter red, "unmark?" beside it), takes the mark off
 //   alt+j  next stop      alt+k  previous stop: auto marks, marks and highlights alike
+//   alt+u  undo the last change of the marks or highlights (marking, highlighting, deleting,
+//          clearing), again and again back
 //   alt+y  highlight the mouse selection (Claude's replies); again on (part of) it takes it off,
 //          as does the button that shows while the pointer is over a highlighted block. With no
 //          new mouse selection, a span by keys: two letters for its start (easymotion-s2, Chinese
@@ -19,7 +21,7 @@
 //                   opens here; the chords above are only what this author picked: the mod binds
 //                   nothing until someone sets them)
 //          guide    what each feature does and how, with the chords it answers to now (/mark guide)
-//   /mark next|prev|add|hl [words]|auto <rows>|off|on|color <#rrggbb>|lang en|zh
+//   /mark next|prev|add|hl [words]|undo|auto <rows>|off|on|color <#rrggbb>|lang en|zh
 //   /mark-clear  every mark and highlight of this session gone (auto marks are not the person's)
 //
 // Where alt+j / alt+k and the panel go: a mark is a message's top; a highlight is each highlighted
@@ -72,12 +74,16 @@ const ACTIONS = {
   next: 'diff:nextFile',
   prev: 'diff:previousFile',
   highlight: 'diff:nextSource',
+  // no key of Claude Code's own answers this one: the diff panel's show/hide tests
+  undo: 'app:toggleDiffNoiseFilter',
   panel: 'diff:previousSource',
 }
 // the rows of the settings tab: the long-reply height, the chords kept in keybindings.json, then
 // the panel's own keys
 const SETTING_SLOTS = ['auto']
-const GLOBAL_SLOTS = ['mark', 'next', 'prev', 'highlight', 'panel']
+const GLOBAL_SLOTS = ['mark', 'next', 'prev', 'highlight', 'undo', 'panel']
+// how many changes back undo reaches
+const UNDO_DEPTH = 50
 const PANEL_SLOTS = ['down', 'up', 'remove']
 const DEFAULT_PANEL_KEYS = { down: 'j', up: 'k', remove: 'x' }
 const PICK_PANE = 'chat-marks-pick'
@@ -355,11 +361,35 @@ async function closePick($) {
   await $.ui.close({ id: PICK_PANE })
 }
 
+// ---- undo -----------------------------------------------------------------------
+//
+// Before each change of the marks or highlights the person makes, what they were then, with a word
+// for the change; undo puts the last back. The module's own: a reload starts it empty.
+const undoStack = []
+
+async function beforeChange($, what) {
+  undoStack.push({ what, marks: await read($, marksAtom), highlights: await read($, hlAtom) })
+  if (undoStack.length > UNDO_DEPTH) undoStack.shift()
+}
+
+// alt+u, /mark undo: the marks and highlights as they were before the last change.
+async function undo($) {
+  const t = await strings($)
+  const last = undoStack.pop()
+  if (!last) return toast($, t.nothingToUndo)
+  await update($, marksAtom, () => last.marks)
+  await update($, hlAtom, () => last.highlights)
+  await persist($)
+  toast($, t.undone(last.what))
+}
+
 // A mark on a message that is not one; off a message that is one.
 async function toggleMarkOn($, item) {
   await closePick($)
   const t = await strings($)
   const at = await $.clock.now()
+  const isMarked = (await read($, marksAtom)).some(m => m.id === item.id)
+  await beforeChange($, isMarked ? t.didUnmark(item.snippet) : t.didMark(item.snippet))
   let added = false
   await update($, marksAtom, marks => {
     added = !marks.some(m => m.id === item.id)
@@ -607,6 +637,8 @@ async function highlightWords($, words) {
 async function toggleHighlight($, t, id, msg, frags) {
   const before = toggleFragments((await read($, hlAtom))[id]?.frags ?? [], frags)
   if (!before.removed && !layout(msg.text, frags)) return toast($, t.notFound)
+  const lit = snippetOf(frags.join(' '), 24)
+  await beforeChange($, before.removed ? t.didUnhighlight(lit) : t.didHighlight(lit))
   await update($, hlAtom, all => {
     const copy = { ...all }
     const { frags: next } = toggleFragments(all[id]?.frags ?? [], frags)
@@ -632,6 +664,7 @@ async function dropFrags($, id, frags) {
 
 // The button over one highlighted block: the fragments lit there go.
 async function unhighlight($, id, frags) {
+  await beforeChange($, (await strings($)).didUnhighlight(snippetOf(frags.join(' '), 24)))
   await dropFrags($, id, frags)
   toast($, (await strings($)).unhighlighted)
 }
@@ -797,6 +830,7 @@ async function togglePanel($) {
 async function pressClearAll($) {
   const panel = await read($, panelAtom)
   if (!panel?.confirmClear) return update($, panelAtom, x => x && { ...x, confirmClear: true })
+  await beforeChange($, (await strings($)).didClear)
   await clearAll($)
   await persist($)
   await update($, panelAtom, x => x && { ...x, confirmClear: false, cursor: null })
@@ -819,6 +853,7 @@ async function pressEntry($, tid) {
 
 async function deleteTarget($, p) {
   const t = await strings($)
+  await beforeChange($, t.didDelete(what(p)))
   if (p.how === 'mark') {
     await update($, marksAtom, ms => ms.filter(m => m.id !== p.id))
     await persist($)
@@ -1382,6 +1417,8 @@ export function register(on) {
     if (e.reason === 'clear') {
       await clearAll($)
       await update($, autoAtom, () => [])
+      // what was marked before is of a conversation no longer there
+      undoStack.length = 0
       seen.clear()
     }
     return next(e)
@@ -1439,6 +1476,7 @@ export function register(on) {
   })
 
   on('command.run', { command: 'mark-clear' }, async $ => {
+    await beforeChange($, (await strings($)).didClear)
     await clearAll($)
     await persist($)
     return { text: (await strings($)).cleared }
@@ -1455,10 +1493,12 @@ export function register(on) {
     else if (arg === 'add' || arg === 'm') await markKey($)
     else if ((arg === 'hl' || arg === 'y') && rest.length) await highlightWords($, rest.join(' '))
     else if (arg === 'hl' || arg === 'y') await highlight($)
+    else if (arg === 'undo' || arg === 'u') await undo($)
     else if (arg === 'auto') return { text: await setAuto($, value) }
     else if (arg === 'color') return { text: await setColor($, value) }
     else if (arg === 'lang') return { text: await setLang($, value) }
     else if (arg === 'clear') {
+      await beforeChange($, (await strings($)).didClear)
       await clearAll($)
       await persist($)
       return { text: (await strings($)).cleared }
@@ -1624,6 +1664,7 @@ export function register(on) {
         chord('chat-marks-next', ACTIONS.next, () => jump($, 1)),
         chord('chat-marks-prev', ACTIONS.prev, () => jump($, -1)),
         chord('chat-marks-hl', ACTIONS.highlight, () => highlight($)),
+        chord('chat-marks-undo', ACTIONS.undo, () => undo($)),
         chord('chat-marks-panel', ACTIONS.panel, () => togglePanel($)),
       ],
     })
