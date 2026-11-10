@@ -106,13 +106,21 @@ function stub(on: any, world: World) {
 const lit = async (ui: any, color = AMBER) =>
   (await ui.findAll({ type: 'Text' })).filter((t: any) => t.props.backgroundColor === color).map((t: any) => t.text)
 
+// alt+y with a mouse selection, then Enter in the pane it opens: the selection lit (or its highlight off)
+async function lightSelection($: any, hint: any) {
+  await hint.press({ key: 'chat-marks-hl' })
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
+  await chooser.press({ key: 'chat-marks-choose-enter' })
+  await chooser.unmount()
+}
+
 test('alt+y lights the selected words, and a selection over them takes them off', async ($, on) => {
   const world: World = { sel: { text: '很重要 的事', requestId: 'r1' } }
   const { toasts, store } = stub(on, world)
   const msg = await $.ui.mount(reply('r1', '前言。\n\n這是 **很重要** 的事\n\n結尾', { first: 0, last: 5, of: 6 }))
   const hint = await $.ui.mount(HINT)
 
-  await hint.press({ key: 'chat-marks-hl' })
+  await lightSelection($, hint)
   expect(toasts.at(-1)).toBe('Highlighted')
   expect((await lit(msg)).join('')).toBe('很重要 的事')
   // the blocks with no highlight are still the engine's markdown
@@ -121,7 +129,7 @@ test('alt+y lights the selected words, and a selection over them takes them off'
 
   // a selection is answered until another is made: a new one, over part of the lit words
   world.sel = { text: '重要', requestId: 'r1' }
-  await hint.press({ key: 'chat-marks-hl' })
+  await lightSelection($, hint)
   expect(toasts.at(-1)).toBe('Highlight removed')
   expect(await lit(msg)).toEqual([])
   expect(await msg.find({ type: 'Text', text: /engine:前言/ })).toBeDefined()
@@ -132,7 +140,7 @@ test('the button over a highlighted block takes that block\'s highlight off', as
   const { toasts } = stub(on, world)
   const msg = await $.ui.mount(reply('r1', '第一段重點\n\n中間\n\n第二段重點'))
   const hint = await $.ui.mount(HINT)
-  await hint.press({ key: 'chat-marks-hl' })
+  await lightSelection($, hint)
   expect(await lit(msg)).toEqual(['第一段重點', '第二段重點'])
 
   expect((await msg.find({ key: 'chat-marks-unhl-r1-0' }))?.props.label).toBe('Remove highlight')
@@ -145,7 +153,7 @@ test('a highlight in my own prompt is refused', async ($, on) => {
   const { toasts } = stub(on, { sel: { text: '我的問題', requestId: 'u1' } })
   await $.ui.mount(prompt('u1', '我的問題'))
   const hint = await $.ui.mount(HINT)
-  await hint.press({ key: 'chat-marks-hl' })
+  await lightSelection($, hint)
   expect(toasts.at(-1)).toMatch(/Only Claude's replies/)
 })
 
@@ -269,7 +277,7 @@ test('the marks panel lists marks and each highlighted block in order; x then a 
   const hint = await $.ui.mount(HINT)
   await markByLetter($, hint, 0)
   world.sel = { text: '重點段', requestId: 'r1' }
-  await hint.press({ key: 'chat-marks-hl' })
+  await lightSelection($, hint)
 
   await hint.press({ key: 'chat-marks-panel' })
   expect(opened.at(-1)).toBe('chat-marks')
@@ -740,7 +748,7 @@ test('alt+u undoes the last change, again and again back', async ($, on) => {
   expect(toasts.at(-1)).toMatch(/^Nothing to undo/)
 
   world.sel = { text: '重點文字', requestId: 'r1' }
-  await hint.press({ key: 'chat-marks-hl' })
+  await lightSelection($, hint)
   await markByLetter($, hint, 0)
   await $.command.run({ command: 'mark-clear', args: '' })
   expect(await lit(msg)).toEqual([])
@@ -766,7 +774,7 @@ test('/mark-clear takes every mark and highlight off', async ($, on) => {
   const msg = await $.ui.mount(reply('r1', '一段重點文字', { first: 0, last: 0, of: 1 }))
   const hint = await $.ui.mount(HINT)
   world.sel = { text: '重點文字', requestId: 'r1' }
-  await hint.press({ key: 'chat-marks-hl' })
+  await lightSelection($, hint)
   await markByLetter($, hint, 0)
   expect(await lit(msg)).toEqual(['重點文字'])
   expect(await msg.find({ type: 'Text', text: '◆ mark' })).toBeDefined()
@@ -783,7 +791,7 @@ test('/mark color and /mark lang change the background and the language', async 
   const { toasts } = stub(on, world)
   const msg = await $.ui.mount(reply('r1', '一段重點文字'))
   const hint = await $.ui.mount(HINT)
-  await hint.press({ key: 'chat-marks-hl' })
+  await lightSelection($, hint)
 
   expect((await $.command.run({ command: 'mark', args: 'color #4d3b00' })).text).toMatch(/#4d3b00/)
   expect(await lit(msg, '#4d3b00')).toEqual(['重點文字'])
@@ -791,7 +799,7 @@ test('/mark color and /mark lang change the background and the language', async 
 
   expect((await $.command.run({ command: 'mark', args: 'lang zh' })).text).toMatch(/語言：中文/)
   world.sel = { text: '重點', requestId: 'r1' }
-  await hint.press({ key: 'chat-marks-hl' })
+  await lightSelection($, hint)
   expect(toasts.at(-1)).toBe('已取消重點')
 })
 
@@ -870,4 +878,64 @@ test('the guide says a number copies a ! command or a web address', async ($, on
   const panel = await $.ui.mount(pane('chat-marks'))
   const section = await panel.find({ key: 'chat-marks-guide-4' })
   expect(section?.text).toMatch(/A number sits before each ! command and web address on screen/)
+})
+
+test('alt+y with a mouse selection (shown or taken down) lights nothing until Enter; the Enter names the words', async ($, on) => {
+  // the terminal answers the last selection until the next prompt, even after it was taken down
+  const text = long('這是 **很重要** 的事，見 https://x.dev/a')
+  const world: World = { sel: { text: '很重要 的事', requestId: 'r1' }, rows: [{ role: 'assistant', text, toolUses: [] }] }
+  const { toasts, opened } = stub(on, world)
+  const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
+  const hint = await $.ui.mount(HINT)
+
+  await hint.press({ key: 'chat-marks-hl' })
+  expect(opened).toEqual(['chat-marks-choose'])
+  expect(await lit(msg)).toEqual(['1'])
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
+  expect((await chooser.find({ key: 'chat-marks-choose-enter' }))?.props.label).toBe('Enter: highlight "很重要 的事"')
+  await chooser.press({ key: 'chat-marks-choose-enter' })
+  expect(toasts.at(-1)).toBe('Highlighted')
+  expect((await lit(msg)).join('')).toBe('很重要 的事')
+
+  // used once: the same selection is not offered again
+  await hint.press({ key: 'chat-marks-hl' })
+  expect((await chooser.find({ key: 'chat-marks-choose-enter' }))?.props.label).toBe('Enter: one-letter code')
+  await hint.press({ key: 'chat-marks-hl' })
+
+  // a new one over the lit words: Enter takes the highlight off
+  world.sel = { text: '重要', requestId: 'r1' }
+  await hint.press({ key: 'chat-marks-hl' })
+  expect((await chooser.find({ key: 'chat-marks-choose-enter' }))?.props.label).toBe('Enter: unhighlight "重要"')
+})
+
+test('a selection the pane lets go by (a number copied, a span by keys) is not offered again', async ($, on) => {
+  const text = long('先跑 `! ls`，再看 alpha beta.')
+  const world: World = { sel: { text: 'alpha', requestId: 'r1' }, rows: [{ role: 'assistant', text, toolUses: [] }] }
+  stub(on, world)
+  const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
+  const hint = await $.ui.mount(HINT)
+  const enterLabel = async (chooser: any) => (await chooser.find({ key: 'chat-marks-choose-enter' }))?.props.label
+
+  await hint.press({ key: 'chat-marks-hl' })
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
+  expect(await enterLabel(chooser)).toBe('Enter: highlight "alpha"')
+  await type(chooser, '1')
+  expect(world.copies).toEqual(['! ls'])
+  expect(await lit(msg)).toEqual([])
+  await hint.press({ key: 'chat-marks-hl' })
+  expect(await enterLabel(chooser)).toBe('Enter: one-letter code')
+  await hint.press({ key: 'chat-marks-hl' })
+
+  world.sel = { text: 'beta', requestId: 'r1' }
+  await hint.press({ key: 'chat-marks-hl' })
+  expect(await enterLabel(chooser)).toBe('Enter: highlight "beta"')
+  // a letter typed: Enter is the one-letter code again, and the span picked lets the selection go
+  await type(chooser, 'a')
+  expect(await enterLabel(chooser)).toBe('Enter: one-letter code')
+  await type(chooser, 'l')
+  await type(chooser, 'a')
+  expect(world.copies?.at(-1)).toBe('alpha beta.')
+  await type(chooser, 'n')
+  await hint.press({ key: 'chat-marks-hl' })
+  expect(await enterLabel(chooser)).toBe('Enter: one-letter code')
 })

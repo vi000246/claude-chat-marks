@@ -53,6 +53,7 @@ export const STRINGS = {
     chooseEndSearch: "Type the end's last two letters",
     closeKey: key => `${key}: cancel`,
     enterOne: 'Enter: one-letter code',
+    enterSelection: (s, removing) => `Enter: ${removing ? 'unhighlight' : 'highlight'} "${s}"`,
     focusHere: chord => `Press ${chord} to type here`,
     noMatch: two => `No "${two}" on screen`,
     copied: n => `Copied ${n}.`,
@@ -137,15 +138,15 @@ export const STRINGS = {
         title: 'Highlight with the mouse',
         slots: ['highlight'],
         lines: [
-          "Select words in a Claude reply, then press it. Select part of a highlight and press it again to take it off,",
-          'or point at the highlight and click Remove highlight.',
+          "Select words in a Claude reply, press it, then Enter (the pane names the words). Select part of a highlight and",
+          'do the same to take it off, or point at the highlight and click Remove highlight.',
         ],
       },
       {
         title: 'Highlight by keys',
         slots: ['highlight'],
         lines: [
-          'With nothing new selected:',
+          'In the pane it opens:',
           '0. A number sits before each ! command and web address on screen: press it to copy that one (the ! kept), nothing asked.',
           "1. Type the start's first two letters. English as it is; Chinese by the first two letters of its Boshiamy code.",
           '   One place matching: it is taken. More: hints go up on them; type the start\'s.',
@@ -244,6 +245,7 @@ export const STRINGS = {
     chooseEndSearch: '打終點最後兩個字母',
     closeKey: key => `${key} 取消`,
     enterOne: 'Enter：找一碼字',
+    enterSelection: (s, removing) => `Enter：${removing ? '取消重點' : '劃重點'}「${s}」`,
     focusHere: chord => `按 ${chord} 切過來打字`,
     noMatch: two => `畫面上沒有「${two}」`,
     copied: n => `已複製 ${n} 字。`,
@@ -325,15 +327,15 @@ export const STRINGS = {
         title: '用滑鼠劃重點',
         slots: ['highlight'],
         lines: [
-          '先用滑鼠選取 Claude 回應裡的字，再按這個鍵。要取消：選取重點裡的一部分再按一次，',
-          '或滑鼠移到重點上，點「取消重點」。',
+          '先用滑鼠選取 Claude 回應裡的字，按這個鍵再按 Enter（面板會寫出選了哪幾個字）。要取消：選取重點裡的一部分，',
+          '一樣按這個鍵再按 Enter，或滑鼠移到重點上，點「取消重點」。',
         ],
       },
       {
         title: '用鍵盤劃重點',
         slots: ['highlight'],
         lines: [
-          '沒有新的滑鼠選取時按：',
+          '按下去開的面板裡：',
           '0. 畫面上每個 ! 命令和網址前面有數字：按數字直接複製那一個（! 一起複製），不問要不要劃重點。',
           '1. 打起點的前兩個字母。英文照打；中文打嘸蝦米碼的前兩碼。',
           '   只有一個位置符合就直接選中；有好幾個會出現提示字母，打起點那個。',

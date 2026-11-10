@@ -6,12 +6,12 @@
 //   alt+j  next stop      alt+k  previous stop: auto marks, marks and highlights alike
 //   alt+u  undo the last change of the marks or highlights (marking, highlighting, deleting,
 //          clearing), again and again back
-//   alt+y  highlight the mouse selection (Claude's replies); again on (part of) it takes it off,
-//          as does the button that shows while the pointer is over a highlighted block. With no
-//          new mouse selection, a span by keys: two letters for its start (easymotion-s2, Chinese
-//          by its Boshiamy code), a hint for its end; it is copied, then y highlights it. Before
-//          a letter is typed, a number sits before each `!` command and web address on screen:
-//          that number copies it, and nothing more is asked
+//   alt+y  a pane to highlight by keys. With a mouse selection not used yet, Enter there lights it
+//          (Claude's replies); on (part of) a highlight it takes it off, as does the button that
+//          shows while the pointer is over a highlighted block. A span by keys: two letters for its
+//          start (easymotion-s2, Chinese by its Boshiamy code), a hint for its end; it is copied,
+//          then y highlights it. Before a letter is typed, a number sits before each `!` command
+//          and web address on screen: that number copies it, and nothing more is asked
 //   the bar  above the prompt for a few seconds after alt+j / alt+k: where every stop lies in the
 //          conversation, the one jumped to, and about what the screen shows
 //   alt+o  the panel (also /mark), three tabs (1, 2, 3):
@@ -126,8 +126,8 @@ let draws = 0
 let cursor = null
 // the conversation's size in cells, as the last message drawn saw it: how tall a reply is
 let screen = { columns: 100, rows: 40 }
-// the mouse selection alt+y last took: $.ui.selection() answers it until another is made, so
-// alt+y again with nothing new selected picks sentences by keys instead
+// the mouse selection alt+y's pane last used or let go by: $.ui.selection() answers it until the
+// next prompt, so it is not offered to Enter again
 let lastSel = null
 // the bar's pending hide
 let barTimer = null
@@ -501,13 +501,16 @@ function labelled(points, replies, alphabet = LETTERS) {
   return points.map(p => ({ ...p, label: byPoint.get(p) }))
 }
 
-async function startChoose($) {
+// The pane, with `sel` the mouse selection it offers to Enter (null for none): it opens with that
+// even when no reply is reckoned on screen.
+async function startChoose($, sel = null) {
   stopConfirmTimer()
   await closePick($)
   const t = await strings($)
   const replies = await repliesOnScreen($)
-  if (!replies.length) return toast($, t.noReplyOnScreen)
-  await update($, chooseAtom, () => ({ phase: 'start', search: true, typed: '', points: [], copies: copiesOf(replies), from: null, to: null, note: null }))
+  if (!replies.length && !sel) return toast($, t.noReplyOnScreen)
+  const offered = sel && { ...sel, removing: toggleFragments((await read($, hlAtom))[sel.requestId]?.frags ?? [], selectionFragments(sel.text)).removed }
+  await update($, chooseAtom, () => ({ phase: 'start', search: true, typed: '', points: [], copies: copiesOf(replies), sel: offered, from: null, to: null, note: null }))
   // docked beside the conversation (fullscreen, from 110 columns) as narrow as a dock goes; inline
   // above the prompt, as short as its few lines: no plugin places a pane anywhere smaller
   await $.ui.open({ id: CHOOSE_PANE, title: t.chooseTitle, focus: true, rows: 4, columns: 24 })
@@ -547,10 +550,14 @@ async function keyChoose($, c) {
 // Two letters typed: the start, or the end, where they land; one place is taken at once.
 const searchTwo = ($, ch, two) => searchBy($, ch, two, blocks => findTwo(blocks, two, bosh))
 
-// One letter, then Enter: the characters whose Boshiamy code is that letter alone (四 is f), which
-// no two letters find.
+// Whether Enter lights the mouse selection: one is offered, and nothing typed yet for the start.
+const offersSelection = ch => !!ch?.sel && ch.phase === 'start' && ch.search && !ch.typed
+
+// Enter before a letter: the mouse selection offered. One letter, then Enter: the characters whose
+// Boshiamy code is that letter alone (四 is f), which no two letters find.
 async function enterChoose($) {
   const ch = await read($, chooseAtom)
+  if (offersSelection(ch)) return highlightSelection($, ch)
   if (!ch?.search || !/^[a-z]$/.test(ch.typed)) return
   const chars = new Set(BOSHIAMY1[ch.typed] ?? '')
   await searchBy($, ch, ch.typed, blocks => blocks.flatMap((b, block) => {
@@ -597,6 +604,7 @@ async function chooseStart($, p) {
 // The end taken: the span is copied, and the pane asks about highlighting it.
 async function chooseEnd($, p) {
   const ch = await read($, chooseAtom)
+  useSelection(ch)
   const text = spanText(seen.get(ch.from.id).text, ch.from, p)
   const frags = selectionFragments(text)
   const copied = await $.ui.copy({ text }).catch(() => ({ isCopied: false }))
@@ -655,6 +663,7 @@ function copiesOf(replies) {
 }
 
 async function copyTarget($, x) {
+  useSelection(await read($, chooseAtom))
   await closeChoose($)
   const t = await strings($)
   const copied = await $.ui.copy({ text: x.text }).catch(() => ({ isCopied: false }))
@@ -663,16 +672,30 @@ async function copyTarget($, x) {
 
 // ---- highlights -----------------------------------------------------------------
 
-// alt+y: the mouse selection lit (or its highlight off); with none made since the last alt+y, the
-// sentences of a reply picked by keys instead.
+// alt+y: the pane that picks by keys; with a mouse selection not used yet, Enter there lights it
+// (or takes its highlight off). The terminal answers $.ui.selection() with the last selection until
+// the next prompt, taken down or not, so a selection is never lit without that Enter: one taken
+// down would be lit too.
 async function highlight($) {
   await closePick($)
-  const t = await strings($)
+  if (await read($, chooseAtom)) return closeChoose($)
   const sel = await $.ui.selection()
-  const isNew = sel && !(lastSel && lastSel.text === sel.text && lastSel.requestId === sel.requestId)
-  if (!isNew) return (await read($, chooseAtom)) ? closeChoose($) : startChoose($)
+  const isNew = !!sel?.text && !(lastSel && lastSel.text === sel.text && lastSel.requestId === sel.requestId)
+  await startChoose($, isNew ? { text: sel.text, requestId: sel.requestId } : null)
+}
+
+// The selection the pane offered counts as used once Enter lit it, or the pane's keys did
+// something else: it is not offered again.
+function useSelection(ch) {
+  if (ch?.sel) lastSel = { text: ch.sel.text, requestId: ch.sel.requestId }
+}
+
+// Enter on the mouse selection: lit, or its highlight off.
+async function highlightSelection($, ch) {
+  useSelection(ch)
   await closeChoose($)
-  lastSel = { text: sel.text, requestId: sel.requestId }
+  const t = await strings($)
+  const sel = ch.sel
   const msg = sel.requestId && seen.get(sel.requestId)
   if (!msg) return toast($, t.oneMessage)
   if (msg.kind !== 'assistant') return toast($, t.onlyReplies)
@@ -1682,7 +1705,9 @@ export function register(on) {
         ...(isCopying(ch) ? [Text({ children: [t.chooseCopy] })] : []),
         Text({ weight: 'bold', children: ['> ' + ch.typed] }),
         ...(ch.note ? [Text({ color: 'warning', children: [ch.note] })] : []),
-        ch.search ? enter(t.enterOne, () => enterChoose($)) : enter(t.closeKey(await chordText($, t, 'highlight')), () => closeChoose($)),
+        ch.search
+          ? enter(offersSelection(ch) ? t.enterSelection(snippetOf(ch.sel.text, 10), ch.sel.removing) : t.enterOne, () => enterChoose($))
+          : enter(t.closeKey(await chordText($, t, 'highlight')), () => closeChoose($)),
         keyButtons,
       ],
     })
