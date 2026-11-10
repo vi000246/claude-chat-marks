@@ -1,4 +1,4 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 // The chords press hidden Buttons in the hint line; here the tests press them by key.
 
@@ -37,7 +37,8 @@ const prompt = (requestId: string, text: string, onScreen: unknown = null) => ({
   props: { text, origin: { kind: 'composer' }, isExpanded: true, onScreen },
 }) as const
 
-type World = { sel?: unknown; rows?: unknown[]; files?: Map<string, string>; copies?: string[] }
+// `ownClock`: the test answers $.clock itself (mock.clock)
+type World = { sel?: unknown; rows?: unknown[]; files?: Map<string, string>; copies?: string[]; ownClock?: boolean }
 
 // `sel` is what the mouse selected; `rows` what $.session.messages() answers; `files` the disk.
 function stub(on: any, world: World) {
@@ -82,7 +83,7 @@ function stub(on: any, world: World) {
   // the engine's end of a turn, beneath the plugin's hook
   on('turn.complete', () => ({ text: '' }))
   on('command.register', () => ({ value: undefined }))
-  on('clock.now', () => ({ value: 1_000 }))
+  if (!world.ownClock) on('clock.now', () => ({ value: 1_000 }))
   on('env.get', ($: any, e: any) => ({ value: e.name === 'HOME' ? '/home/me' : undefined }))
   // the engine resolves a path before a hook sees it (on Windows, C:\home\me\...): compare it bare
   const bare = (path: string) => path.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
@@ -706,6 +707,28 @@ test('Escape closes none of the panes; each closes by the chord that opened it',
     ['chat-marks-choose', undefined],
     ['chat-marks-pick', undefined],
   ])
+})
+
+test('the copy question closes by itself after five seconds with no y or n, the copy kept', async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000 })
+  const text = long('See https://x.dev/a/b for docs.')
+  const world: World = { rows: [{ role: 'assistant', text, toolUses: [] }], ownClock: true }
+  const { closed } = stub(on, world)
+  const msg = await $.ui.mount(reply('r1', text, { first: 0, last: 14, of: 15 }))
+  const hint = await $.ui.mount(HINT)
+  await hint.press({ key: 'chat-marks-hl' })
+  const chooser = await $.ui.mount(pane('chat-marks-choose'))
+  await type(chooser, 'ht')
+  await type(chooser, 'a')
+  expect(world.copies).toEqual(['https://x.dev/a/b'])
+  expect(await chooser.find({ type: 'Text', text: 'Closes in 5 s, the copy kept' })).toBeDefined()
+
+  await clock.advance(4_900)
+  expect(closed).toEqual([])
+  await clock.advance(200)
+  expect(closed).toEqual(['chat-marks-choose'])
+  expect(await lit(msg)).toEqual([])
+  expect(await selectedIn(msg)).toBe('')
 })
 
 test('alt+u undoes the last change, again and again back', async ($, on) => {

@@ -453,6 +453,14 @@ const END_SEARCH = 's'
 const END_LETTERS = LETTERS.replace(END_SEARCH, '')
 const chooseKey = c => 'chat-marks-ch-' + c.charCodeAt(0)
 const CHOOSE_ENTER = 'chat-marks-choose-enter'
+// how long the pane waits for y or n once the span is copied, then closes as n would
+const CONFIRM_MS = 5000
+let confirmTimer = null
+
+function stopConfirmTimer() {
+  confirmTimer?.cancel()
+  confirmTimer = null
+}
 const FOCUS_ACTION = 'abovePrompt:focus'
 const boshSets = new Map()
 const bosh = two => {
@@ -489,6 +497,7 @@ function labelled(points, replies, alphabet = LETTERS) {
 }
 
 async function startChoose($) {
+  stopConfirmTimer()
   await closePick($)
   const t = await strings($)
   if (!(await repliesOnScreen($)).length) return toast($, t.noReplyOnScreen)
@@ -499,6 +508,7 @@ async function startChoose($) {
 }
 
 async function closeChoose($) {
+  stopConfirmTimer()
   if (!(await read($, chooseAtom))) return
   await update($, chooseAtom, () => null)
   await $.ui.close({ id: CHOOSE_PANE })
@@ -587,6 +597,19 @@ async function chooseEnd($, p) {
     phase: 'confirm', search: false, typed: '', points: [], to: { id: p.id, block: p.block, offset: p.offset }, note: null,
     frags, count: [...text.replace(/\s+/g, '')].length, isCopied: !!copied?.isCopied, removing,
   })
+  // no answer within CONFIRM_MS: the pane goes, the copy stays
+  stopConfirmTimer()
+  try {
+    confirmTimer = $.clock.after(CONFIRM_MS, () => {
+      confirmTimer = null
+      read($, chooseAtom)
+        .then(c => (c?.phase === 'confirm' ? closeChoose($) : undefined))
+        .catch(() => undefined)
+    })
+  } catch {
+    // no timer: the pane waits for y or n
+    confirmTimer = null
+  }
 }
 
 // y: the span highlighted (or its highlight off); n: copied and nothing more.
@@ -1600,6 +1623,7 @@ export function register(on) {
               Button({ key: 'chat-marks-choose-no', label: t.no, onPress: safe($, () => answerChoose($, false)) }),
             ],
           }),
+          Text({ dimColor: true, children: [t.closesIn(CONFIRM_MS / 1000)] }),
           keyButtons,
         ],
       })
