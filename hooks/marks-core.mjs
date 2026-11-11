@@ -353,17 +353,26 @@ export function rowsOf(text, columns) {
 
 // The replies marked by themselves: a block of Claude's text at least `minRows` rows tall, its top
 // at least `gap` rows under the top of the last one taken (a nearer one is on the screen a jump to
-// that one lands on). rows: $.session.messages(), a tool call counted as a row. [{ index, key }]
-export function autoMarks(rows, { columns, minRows, gap }) {
+// that one lands on); and, however tall or near, each part of a long reply Claude began by calling
+// `breakTool` (the text after the call: a row of its own, whose top a jump reaches). rows:
+// $.session.messages(), a tool call counted as a row. [{ index, key }]
+export function autoMarks(rows, { columns, minRows, gap, breakTool = null }) {
   const out = []
   let y = 0
   let last = -Infinity
+  // Claude has just called breakTool: its next text starts a part
+  let broke = false
   rows.forEach((r, index) => {
     const tall = r.text ? rowsOf(r.text, columns) : 0
-    if (r.role === 'assistant' && tall >= minRows && y - last >= gap) {
-      out.push({ index, key: keyOf(r.text) })
-      last = y
+    if (r.role === 'user' && r.text) broke = false
+    if (r.role === 'assistant' && r.text) {
+      if (broke || (tall >= minRows && y - last >= gap)) {
+        out.push({ index, key: keyOf(r.text) })
+        last = y
+      }
+      broke = false
     }
+    if (breakTool && r.toolUses?.some(u => u.tool === breakTool)) broke = true
     y += tall + (r.toolUses?.length ?? 0)
   })
   return out

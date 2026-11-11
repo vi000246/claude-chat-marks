@@ -167,6 +167,29 @@ test('auto marks: long replies only, a near one left out, tool calls counted', (
   assert.deepEqual(autoMarks(rows, { columns: 80, minRows: 20, gap: 20 }).map(a => a.index), [8])
 })
 
+test('auto marks: each part Claude began with the break tool, however short or near', () => {
+  const cut = { tool: 'mcp__chat-marks__section' }
+  const rows = [
+    { role: 'user', text: 'question', toolUses: [] },
+    { role: 'assistant', text: lines('part one', 30), toolUses: [cut] },
+    { role: 'user', text: '', toolUses: [] },
+    // three rows tall, right under the part before: a stop all the same
+    { role: 'assistant', text: lines('part two', 2), toolUses: [cut] },
+    { role: 'user', text: '', toolUses: [] },
+    { role: 'assistant', text: lines('part three', 20), toolUses: [{ tool: 'Read' }] },
+    { role: 'user', text: '', toolUses: [] },
+    // after another tool: a part's own text going on, no new part
+    { role: 'assistant', text: lines('still three', 3), toolUses: [cut] },
+    // a prompt between: the cut was the last thing of that reply
+    { role: 'user', text: 'next question', toolUses: [] },
+    { role: 'assistant', text: 'short answer', toolUses: [] },
+  ]
+  const opts = { columns: 80, minRows: 12, gap: 20, breakTool: cut.tool }
+  assert.deepEqual(autoMarks(rows, opts).map(a => a.index), [1, 3, 5])
+  // without the tool's name, as before: the tall ones far enough apart
+  assert.deepEqual(autoMarks(rows, { ...opts, breakTool: null }).map(a => a.index), [1, 5])
+})
+
 test('a position is a fraction of the conversation\'s rows', () => {
   const rows = [
     { role: 'user', text: 'q', toolUses: [] },

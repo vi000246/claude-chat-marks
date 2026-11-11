@@ -115,6 +115,7 @@ export const STRINGS = {
         lines: [
           "When a turn ends, each of Claude's replies at least as tall as the height in Settings gets a dim ◇.",
           'One whose top is within half a screen of the last one is left out: a jump there shows it already.',
+          'A reply over two screens that turns to something different, Claude cuts into parts (at most four): each part gets its ◇, and a jump lands at its top.',
         ],
       },
       {
@@ -304,6 +305,7 @@ export const STRINGS = {
         lines: [
           '每輪結束時，Claude 的回應只要不低於「設定」頁的長回應門檻，上方就會出現暗色的 ◇。',
           '開頭離上一個 ◇ 不到半個畫面的不標：跳到上一個時它已經在畫面上了。',
+          '超過兩個畫面、而且中途換講另一件事的回應，Claude 會切成幾段（最多四段）：每段開頭都有 ◇，跳過去就停在那段開頭。',
         ],
       },
       {

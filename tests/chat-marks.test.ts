@@ -80,6 +80,9 @@ function stub(on: any, world: World) {
     return { value: undefined }
   })
   on('ui.focus', () => ({ value: {} }))
+  on('tool.register', ($: any, e: any) => ({ value: { tool: `mcp__chat-marks__${e.name}` } }))
+  // the engine's own system prompt, beneath the plugin's hook
+  on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'engine prompt', scope: 'shared' }] }))
   // the engine's end of a turn, beneath the plugin's hook
   on('turn.complete', () => ({ text: '' }))
   on('command.register', () => ({ value: undefined }))
@@ -501,6 +504,86 @@ test('/mark auto off takes the ◇ away, a height brings it back', async ($, on)
   expect(await report.find({ type: 'Text', text: '◇' })).toBeUndefined()
   await $.command.run({ command: 'mark', args: 'auto 10' })
   expect(await report.find({ type: 'Text', text: '◇' })).toBeDefined()
+})
+
+const SECTION_TOOL = 'mcp__chat-marks__section'
+
+test('each part Claude begins with the section tool is a stop with its ◇, however short', async ($, on) => {
+  const cut = { tool_use_id: 'tu1', tool: SECTION_TOOL, input: {} }
+  const rows = [
+    { role: 'user', text: '問一', toolUses: [] },
+    { role: 'assistant', text: long('第一部分'), toolUses: [cut] },
+    { role: 'user', text: '', toolUses: [] },
+    { role: 'assistant', text: '第二部分很短', toolUses: [] },
+  ]
+  const { store } = stub(on, { rows })
+  await $.ui.mount(reply('r1', long('第一部分'), { first: 0, last: 14, of: 15 }))
+  const second = await $.ui.mount(reply('r2', '第二部分很短', { first: 0, last: 1, of: 2 }))
+  await turnEnds($)
+  expect(await second.find({ type: 'Text', text: '◇' })).toBeDefined()
+  expect((store.get('s:sess-1') as any).auto.map((a: any) => a.id)).toEqual(['r1', 'r2'])
+})
+
+test('the section call is answered here; past three in one reply Claude is told to write the rest whole', async ($, on) => {
+  stub(on, {})
+  const call = (more = {}) => $.tool.call({ tool: SECTION_TOOL, ...more } as any) as Promise<any>
+  for (let i = 0; i < 3; i++) expect((await call()).result).toMatch(/new part begins here/)
+  expect((await call()).result).toMatch(/4 parts already/)
+  // the reply over, the next one starts counting again
+  await turnEnds($)
+  expect((await call()).result).toMatch(/new part begins here/)
+  // a subagent's text is drawn as no rows: refused
+  expect((await call({ agentId: 'a1' })).deny).toMatch(/main conversation/)
+  // with auto marks off, it stops
+  await $.command.run({ command: 'mark', args: 'auto off' })
+  expect((await call()).result).toMatch(/turned parts off/)
+})
+
+test('the section call draws nothing in the transcript; ctrl+o shows it', async ($, on) => {
+  stub(on, {})
+  const row = (component: string, isExpanded: boolean) => ({
+    plugin: 'chat-marks',
+    component,
+    requestId: `${component}-${isExpanded}`,
+    surface: 'terminal',
+    props: { tool_use_id: 'tu1', tool: SECTION_TOOL, input: {}, output: 'ok', isRunning: false, isErrored: false, isInterrupted: false, isExpanded },
+  }) as any
+  for (const component of ['ToolUse', 'ToolResult']) {
+    expect(await (await $.ui.mount(row(component, false))).find({ type: 'Text' })).toBeUndefined()
+    expect(await (await $.ui.mount(row(component, true))).find({ type: 'Text', text: /^engine:/ })).toBeDefined()
+  }
+})
+
+test('the system prompt says how tall two screens are on the largest window this machine has drawn it in', async ($, on) => {
+  const { store } = stub(on, {})
+  // what the engine renders a prompt from, whole, as it raises the event
+  const input = (tools: string[]) =>
+    ({ model: 'claude-opus-5-5', promptModel: 'claude-opus-5-5', surfaces: ['terminal'], tools, outputStyle: null, traits: [] }) as any
+  const compose = async () => {
+    const r: any = await $.prompt.compose(input([SECTION_TOOL]))
+    return r.sections.find((s: any) => s.id === 'chat-marks:sections')
+  }
+  expect(await compose()).toBeUndefined()
+  await $.ui.mount({ ...reply('r1', '答'), viewport: { columns: 120, rows: 50 } } as any)
+  const first = await compose()
+  expect(first.scope).toBe('session')
+  expect(first.text).toMatch(/50 rows tall and 120 columns wide, so two screens of a reply are about 100 rows/)
+  // moved to a smaller window, or one a row taller: the same text, the prompt cache kept
+  await $.ui.mount({ ...reply('r2', '答二'), viewport: { columns: 80, rows: 30 } } as any)
+  expect((await compose()).text).toBe(first.text)
+  await $.ui.mount({ ...reply('r3', '答三'), viewport: { columns: 120, rows: 52 } } as any)
+  expect((await compose()).text).toBe(first.text)
+  // a window much larger than any before: two screens of that, kept for the sessions after
+  await $.ui.mount({ ...reply('r4', '答四'), viewport: { columns: 200, rows: 60 } } as any)
+  expect((await compose()).text).toMatch(/60 rows tall and 200 columns wide, so two screens of a reply are about 120 rows/)
+  expect((store.get('cfg') as any).screen).toEqual({ rows: 60, columns: 200 })
+  await $.ui.mount({ ...reply('r5', '答五'), viewport: { columns: 80, rows: 30 } } as any)
+  expect((await compose()).text).toMatch(/60 rows tall/)
+  // not where the tool is not offered, nor with auto marks off
+  const bare: any = await $.prompt.compose(input([]))
+  expect(bare.sections.map((s: any) => s.id)).toEqual(['intro'])
+  await $.command.run({ command: 'mark', args: 'auto off' })
+  expect(await compose()).toBeUndefined()
 })
 
 test('the settings tab shows the long-reply height and changes it', async ($, on) => {

@@ -27,9 +27,11 @@
 //   /mark-clear  every mark and highlight of this session gone (auto marks are not the person's)
 //
 // Where alt+j / alt+k and the panel go: a mark is a message's top; a highlight is each highlighted
-// block, brought to the middle of the screen. An auto mark (◇) is a long reply's top: worked out
-// from the conversation at each turn's end (marks-core autoMarks), never chosen or deleted, so a
-// new height (/mark auto) holds for the whole conversation at once.
+// block, brought to the middle of the screen. An auto mark (◇) is a long reply's top, or the top of
+// a part of one: Claude cuts a reply over two screens where it turns to something different by
+// calling this mod's tool (SECTION_TOOL), whose row is drawn as nothing. They are worked out from
+// the conversation at each turn's end (marks-core autoMarks), never chosen or deleted, so a new
+// height (/mark auto) holds for the whole conversation at once.
 //
 // A mark is a whole transcript row (a prompt, or one block of a reply): $.ui.scroll reveals a row,
 // never a line inside one; a highlighted block, drawn by this mod, is reached by its key. A mod
@@ -58,9 +60,10 @@
 // $.store:
 //   s:<sessionId>  { marks, highlights, auto, at }, so a resumed session gets them back; the newest
 //                  KEEP_SESSIONS are kept
-//   cfg            { color, lang, auto, keys: { down, up, remove }, hints }: auto the rows a reply
-//                  needs to be marked by itself (0: none is); hints counts the "no hotkeys yet"
-//                  toasts (three at most)
+//   cfg            { color, lang, auto, keys: { down, up, remove }, hints, screen }: auto the rows a
+//                  reply needs to be marked by itself (0: none is); hints counts the "no hotkeys
+//                  yet" toasts (three at most); screen { rows, columns } the largest this machine
+//                  has drawn the conversation on, what the section tool's two screens are
 
 import { atom, read, update } from 'claude-code'
 import { BOSHIAMY1, BOSHIAMY2 } from './boshiamy.mjs'
@@ -105,6 +108,12 @@ const COLOR = /^#[0-9a-f]{6}$/i
 const ENTRY = 'chat-marks-e-'
 // a reply this many rows tall (or taller) is marked by itself, and gets one of alt+m's letters
 const DEFAULT_AUTO_ROWS = 12
+// The tool Claude calls between the parts of a reply over two screens: the text after a call is a
+// row of its own, and a row's top is as far as $.ui.scroll reaches into the transcript (a key drawn
+// inside a message is never reached there), so each part is an auto mark a jump lands on exactly.
+const SECTION_TOOL = 'mcp__chat-marks__section'
+// the parts one reply may be cut into past its first
+const MAX_SECTIONS = 3
 
 const marksAtom = atom({ plugin: 'chat-marks', key: 'marks' }, [])
 const hlAtom = atom({ plugin: 'chat-marks', key: 'highlights' }, {})
@@ -126,6 +135,9 @@ let draws = 0
 let cursor = null
 // the conversation's size in cells, as the last message drawn saw it: how tall a reply is
 let screen = { columns: 100, rows: 40 }
+let isMeasured = false
+// the section tool's calls in the reply being written
+let sectionCalls = 0
 // the mouse selection alt+y's pane last used or let go by: $.ui.selection() answers it until the
 // next prompt, so it is not offered to Enter again
 let lastSel = null
@@ -152,7 +164,10 @@ const entryKey = tid => ENTRY + tid
 
 function remember(e, kind) {
   seen.set(e.requestId, { kind, text: e.props.text, onScreen: e.props.onScreen, drawn: ++draws })
-  if (e.viewport?.columns) screen = { columns: e.viewport.columns, rows: e.viewport.rows || screen.rows }
+  if (e.viewport?.columns) {
+    screen = { columns: e.viewport.columns, rows: e.viewport.rows || screen.rows }
+    isMeasured = true
+  }
 }
 
 // A reply's text body is the conversation's width less the bullet column.
@@ -321,7 +336,7 @@ async function refreshAuto($) {
   const rows = minRows ? await $.session.messages() : []
   const gap = Math.max(8, Math.floor(screen.rows / 2))
   const before = await read($, autoAtom)
-  const next = (minRows ? autoMarks(rows, { columns: bodyColumns(), minRows, gap }) : []).map(({ index, key }) => ({
+  const next = (minRows ? autoMarks(rows, { columns: bodyColumns(), minRows, gap, breakTool: SECTION_TOOL }) : []).map(({ index, key }) => ({
     key,
     id: drawnId(key) ?? before.find(a => a.key === key)?.id ?? null,
     snippet: snippetOf(plainOf(rows[index].text)),
@@ -342,9 +357,70 @@ async function refreshAuto($) {
 }
 
 // A new long-reply height for every session (0: none is marked by itself), held at once here.
+// Turned on, Claude gets the section tool (a tool cannot be taken back: turned off, its paragraph
+// leaves the system prompt and a call is told to stop).
 async function storeAuto($, n) {
   await $.store.set('cfg', { ...(await config($)), auto: n })
+  if (n) await $.tool.register(SECTION_SPEC)
   await refreshAuto($)
+}
+
+// ---- parts of a long reply ------------------------------------------------------------
+
+const SECTION_SPEC = {
+  name: 'section',
+  description:
+    'Begins a new part of a long reply to the person, so they can jump straight to it: the terminal draws each stretch ' +
+    'of text between tool calls as a row of its own, and their keys for the next / previous mark land on a row\'s top only. ' +
+    'Call it only when all of these hold: you are answering the person in the main conversation (never as a subagent); ' +
+    'the reply will run past about two screens (the system prompt says how much that is); and the part about to begin is ' +
+    'about something different from the one before it (another topic, a second concept, a separate option or question) ' +
+    'and reads on its own. Never between parts that must be read together to be understood, never inside a long stretch ' +
+    `about one thing, never in a shorter reply. At most ${MAX_SECTIONS} calls in one reply. Call it right where the new ` +
+    'part begins, then go straight on with that part: no recap of what came before, no sentence about the break. It takes ' +
+    'no input and does nothing else.',
+  inputSchema: { type: 'object', properties: {} },
+  isDeferred: false,
+}
+
+const round100 = n => Math.max(100, Math.round(n / 100) * 100)
+
+// The larger of two screen sizes, by their cells, `b` only when it is over a tenth larger (a row
+// or two more is no reason to rebuild the prompt cache); either may be missing.
+const largerScreen = (a, b) => (!a ? b : !b ? a : b.rows * b.columns > a.rows * a.columns * 1.1 ? b : a)
+
+// What the system prompt says of the screen for the section tool: two screens in rows, and about
+// how much prose that is (reckoned from replies of headings, lists and paragraphs drawn at this
+// width). The screen is the largest this machine has drawn the conversation on (cfg.screen): a
+// terminal is often moved from a small window to a large one to read, and a text that grew only
+// with it, not with each move, costs the prompt cache seldom. Null before any is measured.
+async function sectionPromptText($) {
+  const cfg = await config($)
+  const best = largerScreen(cfg.screen, isMeasured ? { rows: screen.rows, columns: screen.columns } : null)
+  if (!best) return null
+  if (best !== cfg.screen) await $.store.set('cfg', { ...cfg, screen: best })
+  const { rows, columns } = best
+  const chars = round100((2 * rows * (columns - 2)) / 7)
+  return (
+    '# Long replies in parts\n\n' +
+    `The person reads this conversation in a terminal up to ${rows} rows tall and ${columns} columns wide, so two screens of ` +
+    `a reply are about ${2 * rows} rows as drawn (a line wraps every ${columns - 2} columns, a CJK character taking two, and ` +
+    `a blank line is a row): roughly ${chars} CJK characters, or ${round100(chars / 3.25)} English words, of prose with ` +
+    `headings and lists. Only a reply to the person longer than that may be cut into parts, by calling ${SECTION_TOOL} ` +
+    'where a part about something different begins, as its description says. A shorter reply is never cut.'
+  )
+}
+
+// A call of the section tool: a subagent's refused (none of its text is drawn as rows); with auto
+// marks off, or past MAX_SECTIONS in one reply, Claude is told to write the rest whole.
+async function sectionCall($, e) {
+  if (e.agentId) return { deny: 'Only for a reply to the person in the main conversation: a subagent writes no parts.' }
+  if (!(await autoRows($))) return { result: 'The person has turned parts off: write the rest whole, and do not call this again.' }
+  sectionCalls++
+  if (sectionCalls > MAX_SECTIONS) {
+    return { result: `This reply has ${MAX_SECTIONS + 1} parts already: write the rest of it without another call.` }
+  }
+  return { result: 'The new part begins here. Go straight on with it: no recap of what came before, no sentence about the break.' }
 }
 
 // /mark auto <rows> | on | off; no argument says how it is now.
@@ -1507,10 +1583,34 @@ export function register(on) {
   on('session.start', async ($, e, next) => {
     await restore($)
     await registerCommands($)
+    if (await autoRows($)) await $.tool.register(SECTION_SPEC).catch(err => toast($, 'chat-marks: ' + (err?.message || err)))
     await hintSetup($)
     await refreshAuto($)
     return next(e)
   })
+
+  // Claude's call between two parts of a long reply: answered here, so no permission is asked
+  on('tool.call', { tool: SECTION_TOOL }, async ($, e) => sectionCall($, e))
+    .catch(() => ({ result: 'The new part begins here. Go straight on with it.' }))
+
+  // what two screens come to, beside the tool, once the screen is known
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    if (!e.tools.includes(SECTION_TOOL) || e.traits.includes('print') || e.traits.includes('teammate')) return composed
+    if (!(await autoRows($))) return composed
+    const text = await sectionPromptText($)
+    if (!text) return composed
+    return { ...composed, sections: [...composed.sections, { id: 'chat-marks:sections', text, scope: 'session' }] }
+  })
+
+  // The call's row and its result draw nothing: the part after it has its ◇. ctrl+o shows them.
+  for (const component of ['ToolUse', 'ToolResult']) {
+    on('ui.render', { component, props: { tool: SECTION_TOOL } }, async ($, e, next) => {
+      if (e.props.isExpanded) return next(e)
+      const { Box } = $.ui.resolve(e)
+      return Box({ children: [] })
+    })
+  }
 
   on('session.end', async ($, e, next) => {
     if (e.reason === 'clear') {
@@ -1529,6 +1629,7 @@ export function register(on) {
     if (!e.agentId) {
       // the transcript file has grown: what was not in it may be now
       unfound.clear()
+      sectionCalls = 0
       await refreshAuto($)
     }
     return done
@@ -1538,6 +1639,7 @@ export function register(on) {
     await closePick($)
     await closeChoose($)
     lastSel = null
+    sectionCalls = 0
     await update($, barAtom, () => null)
     return next(e)
   })
